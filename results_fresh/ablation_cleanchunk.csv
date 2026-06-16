@@ -1,0 +1,4 @@
+Kondisi,n_run,Faithfulness,Faithfulness_std,Answer_Relevancy,Answer_Relevancy_std,Precision@5,Precision@5_std,Recall@5,Recall@5_std,Hit@5,Hit@5_std
+SPECTER2 (tanpa CoT),3,0.6362,0.0014,0.904,0.0007,0.6881,0.0,0.9056,0.0,0.9583,0.0
+SPECTER2 + CoT,3,0.7017,0.0048,0.9131,0.0005,0.6881,0.0,0.9056,0.0,0.9583,0.0
+HyDE + CoT,3,0.6464,0.0094,0.8948,0.0025,0.674,0.0082,0.8787,0.0061,0.9097,0.0

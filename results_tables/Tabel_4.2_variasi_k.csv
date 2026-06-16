@@ -1,0 +1,4 @@
+Mode,K,Precision@K,Recall@K,Hit@K,Faithfulness,Answer_Relevancy
+Proposed,3,0.6667,0.8139,0.8472,0.601,0.8431
+Proposed,5,0.5956,0.8405,0.875,0.606,0.8724
+Proposed,10,0.4819,0.8951,0.9236,0.6624,0.9075

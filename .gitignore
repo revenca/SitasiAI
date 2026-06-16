@@ -1,0 +1,72 @@
+# ============================================================
+#  RAHASIA — JANGAN PERNAH COMMIT (API key OpenRouter & DeepSeek!)
+# ============================================================
+.env
+.env.*
+!.env.example
+*.key
+
+# ============================================================
+#  Python
+# ============================================================
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+_*_tmp.py
+
+# ============================================================
+#  Node / Frontend (React + Vite)
+# ============================================================
+node_modules/
+**/node_modules/
+dist/
+build/
+.vite/
+*.local
+npm-debug.log*
+
+# ============================================================
+#  FAISS index (besar, regenerable: indexing.py / indexing_abstract.py)
+#  -> *.bin menutup semua varian (chunk_clean, abstract_clean, dst)
+# ============================================================
+*.bin
+*.bin.lock
+
+# ============================================================
+#  Cache model / HuggingFace / torch
+# ============================================================
+.cache/
+*.pt
+*.safetensors
+
+# ============================================================
+#  OS / editor
+# ============================================================
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.tmp
+*.log
+
+# ============================================================
+#  DATA & HASIL BESAR (opsional — hapus baris kalau mau di-track di git)
+# ============================================================
+# Metadata index besar (regenerable) — semua varian metadata*.json
+metadata*.json
+# Prediksi mentah eksperimen (besar, berisi retrieved_contexts; regenerable)
+hasil_eksperimen/hasil_prediksi_*.csv
+# PDF sumber (besar)
+Data (paper)/
+# Teks hasil ekstrak PDF (regenerable)
+output_teks/
+output_teks_clean/
+# SQLite DB backend (kalau ada)
+*.db
+*.sqlite3

@@ -1,0 +1,10 @@
+Index,K,Precision,Recall,Hit
+Dirty-Chunk (11066 vek),3,0.7106,0.8326,0.875
+Dirty-Chunk (11066 vek),5,0.639,0.8639,0.9028
+Dirty-Chunk (11066 vek),10,0.5385,0.9449,0.9792
+Clean-Chunk (9473 vek),3,0.7512,0.8778,0.9306
+Clean-Chunk (9473 vek),5,0.6875,0.9056,0.9583
+Clean-Chunk (9473 vek),10,0.622,0.9303,0.9653
+Clean-Abstract (100 vek),3,0.2963,0.8347,0.8681
+Clean-Abstract (100 vek),5,0.1903,0.881,0.9097
+Clean-Abstract (100 vek),10,0.1007,0.9137,0.9444

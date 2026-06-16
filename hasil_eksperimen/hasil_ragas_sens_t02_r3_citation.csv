@@ -1,0 +1,2 @@
+citation_precision,citation_recall,f_measure,hit_at_k,n_queries
+0.7003472222222222,0.8997685185185185,0.752314814814815,0.9375,144

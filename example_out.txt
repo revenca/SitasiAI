@@ -1,0 +1,41 @@
+﻿Memuat encoder embedding 'allenai/specter2_base' + adapter 'allenai/specter2'...
+  Device: cuda | Adapter: proximity
+
+
+[debug] raw chunks=25  kandidat unik=4
+==================================================================================================
+PARAGRAF MASUKAN (draf pengguna):
+Azimuth-scanning MIMO radar can steer its transmit beam without per-element phase shifters by
+circulating coded signals, where the time-delay difference between antenna elements produces an
+equivalent phase steering.
+
+--------------------------------------------------------------------------------------------------
+ABSTRAK HIPOTETIS (HyDE, temp 0,7):
+This paper presents a novel approach to azimuth-scanning MIMO radar systems that eliminates the
+need for per-element phase shifters by employing a signal-circulation methodology. We propose a
+coded signal transmission strategy that leverages time-delay differences among antenna elements to
+achieve equivalent phase steering. Our experimental setup utilizes a 16-element linear array with
+a frequency range of 2-4 GHz, implementing a custom-coded waveform designed for optimal Doppler
+tolerance and spatial resolution. Extensive simulations and field tests demonstrate that our
+method achieves a peak steering accuracy improvement of 25% over traditional phase-shifting
+techniques, while maintaining robust target detection capabilities across varying environmental
+conditions. These findings underscore the potential of coded signal circulation in enhancing the
+performance and scalability of MIMO radar systems.
+
+--------------------------------------------------------------------------------------------------
+LIMA KANDIDAT TERATAS (K = 5):
+  1. A Transmitter Design for the Multi-beam CC-OFDM Azimuth Scanning MIMO Radar  (skor 0.9439)
+  2. Receiver Processing of the Multibeam Azimuth Scanning CC-OFDM-MIMO Radar  (skor 0.9420)
+  3. A Novel Approach to Remote Detection in Medical Radar Applications Using Flexibl  (skor 0.9389)
+  4. FPMIMO A General MIMO Structure With Overlapping Subarrays for Various Radar App  (skor 0.9358)
+
+--------------------------------------------------------------------------------------------------
+KALIMAT SITASI (keluaran CoT):
+The CC OFDM MIMO radar can achieve high resolution in angle, range, and velocity, with significant
+beam isolation capabilities (A Transmitter Design for the Multi-beam CC-OFDM Azimuth Scanning MIMO
+Radar).
+
+--------------------------------------------------------------------------------------------------
+PAPER REFERENSI : A Transmitter Design for the Multi-beam CC-OFDM Azimuth Scanning MIMO Radar
+SITASI APA      : (Kuswidiastuti et al., 2022)
+==================================================================================================

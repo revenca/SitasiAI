@@ -1,0 +1,8 @@
+kategori,n,precision_at_k,recall_at_k,hit_at_k,faithfulness,answer_relevancy
+Computer Vision,76,0.5748,0.7768,0.8158,0.581,0.8282
+Telecom/Radar,30,0.6611,1.0,1.0,0.6061,0.9342
+Software Eng/IT,22,0.625,0.8864,0.9545,0.6754,0.861
+NLP,5,0.3833,0.8,0.8,0.55,0.9299
+ML/Forecasting,4,0.875,1.0,1.0,0.5625,0.9191
+Drone/UAV,4,0.5833,1.0,1.0,0.8333,0.9298
+E-Nose/Sensor,3,0.25,0.4444,0.6667,0.3333,0.6192

@@ -1,0 +1,6 @@
+Metrik,Baseline_mean,Baseline_std,HyDE_mean,HyDE_std,delta_HyDE_minus_Baseline,pooled_sigma
+Faithfulness,0.6954,0.0093,0.6615,0.0136,-0.0339,2.91
+Answer_Relevancy,0.9128,0.0008,0.8953,0.0039,-0.0175,6.28
+Precision@5,0.6881,0.0,0.7048,0.0084,0.0167,2.81
+Recall@5,0.9056,0.0,0.8924,0.0116,-0.0132,1.61
+Hit@5,0.9583,0.0,0.9347,0.0105,-0.0236,3.17
