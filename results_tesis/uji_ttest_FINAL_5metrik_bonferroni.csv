@@ -1,0 +1,6 @@
+﻿Metrik,Baseline,HyDE,Selisih,t,p,dz,Sig(α=.05),Sig Bonferroni(α=.01)
+Faithfulness,0.6954,0.6615,-0.0339,-1.764,0.0798,-0.147,Tidak,Tidak
+Answer Relevancy,0.9128,0.8953,-0.0175,-1.995,0.0479,-0.166,Ya,Tidak
+Precision (paper-level),0.6881,0.7048,0.0167,0.901,0.3692,0.075,Tidak,Tidak
+Recall@5,0.9056,0.8924,-0.0132,-0.824,0.4114,-0.069,Tidak,Tidak
+Hit@5,0.9583,0.9347,-0.0236,-1.492,0.138,-0.124,Tidak,Tidak

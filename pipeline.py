@@ -44,7 +44,7 @@ GT_FILE     = "ground_truth_human.csv"
 GT_COL      = "ground_truth"
 
 # Hyperparameter (untuk analisis sensitivitas — bisa diatur via env)
-HYDE_TEMP   = float(os.getenv("HYDE_TEMP", "0.4"))   # temperature HyDE
+HYDE_TEMP   = float(os.getenv("HYDE_TEMP", "0.7"))   # temperature HyDE
 COT_TEMP    = float(os.getenv("COT_TEMP",  "0.2"))   # temperature CoT
 HYDE_WORDS  = os.getenv("HYDE_WORDS", "100-150")     # panjang abstrak HyDE (kata)
 HYDE_N             = int(os.getenv("HYDE_N", "1"))                # jumlah abstrak hipotetis (Gao et al. multi-gen; 1=single-shot lama)

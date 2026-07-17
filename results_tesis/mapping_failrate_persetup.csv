@@ -1,0 +1,7 @@
+﻿setup,chunk_retrieved,hard_fail,hard_fail_rate_%,chunk_ambigu,ambigu_rate_%
+clean_base_r1,698,0,0.0,1,0.143
+phyde_r1,697,0,0.0,1,0.143
+clean_base_r2,698,0,0.0,1,0.143
+phyde_r2,698,0,0.0,1,0.143
+clean_base_r3,698,0,0.0,1,0.143
+phyde_r3,700,0,0.0,1,0.143

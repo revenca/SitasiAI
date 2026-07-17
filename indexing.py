@@ -1,8 +1,3 @@
-"""
-indexing.py — Baca output_teks/, chunk, embed dengan SciBERT, simpan ke FAISS.
-Jalankan SEKALI sebelum pipeline.py.
-"""
-
 import os
 # Hindari konflik OpenMP (torch + faiss + numpy) di Windows — harus diset SEBELUM import lib
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")

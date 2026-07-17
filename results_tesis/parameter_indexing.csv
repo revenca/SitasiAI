@@ -1,0 +1,19 @@
+Aspek,Nilai
+Jumlah dokumen (korpus),100 paper
+Format dokumen,PDF (IEEE Xplore)
+Metode ekstraksi teks,"Layout-aware (pdfplumber, deteksi kolom)"
+Metode chunking,RecursiveCharacterTextSplitter (LangChain)
+Ukuran potongan (chunk_size),512 karakter
+Tumpang tindih (chunk_overlap),50 karakter
+Total potongan (chunk),9473
+Rata-rata chunk per paper,94.7
+Median chunk per paper,76.0
+Standar deviasi,46.6
+Chunk paling sedikit,32 (Modeling Impedance Control of 2 DoF Robot)
+Chunk paling banyak,271 (Deep Learning-Based Lesion Detection in Endoscopy)
+Rata-rata panjang chunk,480 karakter
+Model embedding,SPECTER2 (allenai/specter2_base + adapter proximity)
+Dimensi vektor,768
+Normalisasi,L2 (inner product = cosine)
+Tipe indeks,FAISS IndexFlatIP
+Jumlah vektor terindeks,9473

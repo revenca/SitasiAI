@@ -1,0 +1,5 @@
+﻿Metrik,Baseline,HyDE,Selisih,t_p,Wilcoxon_p,dz,Signif
+Precision (paper-level),0.6881,0.7048,0.0167,0.3692,0.4338,0.075,Tidak
+Recall@5,0.9056,0.8924,-0.0132,0.4114,0.3924,-0.069,Tidak
+Hit@5,0.9583,0.9347,-0.0236,0.138,0.1346,-0.124,Tidak
+MRR,0.8706,0.8411,-0.0295,0.1458,0.1371,-0.122,Tidak
