@@ -49,6 +49,7 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 MIN_SIM  = float(os.getenv("MIN_SIM", "0.70"))    # ambang cosine absolut (buang sampah)
 REL_WIN  = float(os.getenv("REL_WIN", "0.08"))    # jendela relatif thd skor tertinggi
 VERIFY_CITATION = os.getenv("VERIFY_CITATION", "1") == "1"
+VERIFY_STRICT   = os.getenv("VERIFY_STRICT", "1") == "1"   # 1=ketat, 0=sedang (lenient)
 
 
 def _gate_candidates(cands: list) -> list:
@@ -65,11 +66,18 @@ def _verify_support(claim: str, ref: dict) -> bool:
     spesifik (bukan sekadar setopik). Gagal verifikasi → sitasi ditolak."""
     if not VERIFY_CITATION or not ref:
         return True
+    if VERIFY_STRICT:
+        rule = ("Decide whether the reference DIRECTLY supports the SPECIFIC claim — same "
+                "finding, method, or fact. Being on the same broad topic is NOT enough. "
+                "When in doubt, answer NO.")
+    else:   # mode sedang: terima bila relevan-substantif, tolak hanya bila jelas tak nyambung
+        rule = ("Decide whether the reference could reasonably serve as a citation for the "
+                "statement — i.e. it is on the same subject and does not contradict it. "
+                "Accept general/introductory statements if the reference covers that subject. "
+                "Answer NO only if the reference is clearly about an unrelated topic.")
     out = _call_llm(
-        "You are a strict citation auditor. Decide whether the reference DIRECTLY supports "
-        "the SPECIFIC claim below — same finding, method, or fact. Being on the same broad "
-        "topic is NOT enough. When in doubt, answer NO.\n\n"
-        f"Claim:\n{claim[:800]}\n\n"
+        f"You are a citation auditor. {rule}\n\n"
+        f"Statement:\n{claim[:800]}\n\n"
         f"Reference title: {ref.get('paper_title','')}\n"
         f"Reference abstract: {(ref.get('chunk_text') or '')[:900]}\n\n"
         "Answer with exactly one word: YES or NO.",

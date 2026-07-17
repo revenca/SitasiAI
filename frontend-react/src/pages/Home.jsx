@@ -36,7 +36,7 @@ export default function Home() {
   const { active, setActiveMessages: setMessages, newChat: newChatCtx } = useChat();
   const messages = active?.messages ?? [];
   const [input, setInput] = useState("");
-  const [topK, setTopK] = useState(5);
+  const topK = 10;                                  // tetap 10 (dropdown dihapus)
   // Dua mode saja: "sitasi" (auto-deteksi: 1 kalimat → rekomendasi tunggal,
   // multi-kalimat → sitasi per kalimat) dan "cari" (pencarian paper/topik).
   const [mode, setMode] = useState("sitasi");
@@ -167,12 +167,6 @@ export default function Home() {
             <select value={mode} onChange={(e) => setMode(e.target.value)}>
               <option value="sitasi">Buat sitasi</option>
               <option value="cari">Cari paper</option>
-            </select>
-          </div>
-          <div className="opt-k">
-            <span>Jumlah paper</span>
-            <select value={topK} onChange={(e) => setTopK(+e.target.value)}>
-              {[3, 5, 10].map((k) => <option key={k} value={k}>{k}</option>)}
             </select>
           </div>
         </div>
