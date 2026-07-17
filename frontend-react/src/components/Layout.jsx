@@ -1,34 +1,22 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { useAuth } from "../auth.jsx";
 import { useChat } from "../chat.jsx";
 import BookLogo from "./BookLogo.jsx";
-import RevealTransition from "./RevealTransition.jsx";
 import { IconSearch, IconFile, IconHelp, IconPlus, IconEdit, IconTrash, IconChatBubble } from "./Icons.jsx";
 
 const EASE = [0.22, 0.61, 0.36, 1];
 
 export default function Layout({ children }) {
-  const { user, logout } = useAuth();
   const { sessions, activeId, newChat, openChat, renameChat, deleteChat } = useChat();
   const loc = useLocation();
   const nav = useNavigate();
   const [editingId, setEditingId] = useState(null);
   const [editText, setEditText] = useState("");
 
-  const goChat = (id) => { openChat(id); if (loc.pathname !== "/app") nav("/app"); };
+  const goChat = (id) => { openChat(id); if (loc.pathname !== "/") nav("/"); };
   const startRename = (e, s) => { e.stopPropagation(); setEditingId(s.id); setEditText(s.title); };
   const commitRename = () => { if (editingId) renameChat(editingId, editText); setEditingId(null); };
-
-  // Overlay reveal setelah login/daftar
-  const [intro, setIntro] = useState(!!loc.state?.fromLogin);
-  useEffect(() => {
-    if (!intro) return;
-    window.history.replaceState({}, ""); // biar tak terulang saat refresh
-    const t = setTimeout(() => setIntro(false), 1300);
-    return () => clearTimeout(t);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const NavItem = ({ to, icon, label }) => (
     <motion.div whileTap={{ scale: 0.97 }}>
@@ -41,18 +29,16 @@ export default function Layout({ children }) {
 
   return (
     <div className="app-shell">
-      <AnimatePresence>{intro && <RevealTransition key="reveal" />}</AnimatePresence>
-
       {/* Sidebar */}
       <aside className="sidebar">
         <Link to="/" className="brand"><BookLogo size={24} color="#fff" /> <span><b>Sitasi</b>AI</span></Link>
 
         <div className="nav-section">WORKFLOWS</div>
-        <NavItem to="/app" icon={<IconSearch size={ICON} />} label="Pembuatan Sitasi" />
-        <NavItem to="/papers" icon={<IconFile size={ICON} />} label="Daftar Paper" />
+        <NavItem to="/" icon={<IconSearch size={ICON} />} label="Pembuatan Sitasi" />
+        <NavItem to="/papers" icon={<IconFile size={ICON} />} label="Library" />
 
         <div className="nav-section">RIWAYAT CHAT</div>
-        <button className="newchat-btn" onClick={() => { newChat(); if (loc.pathname !== "/app") nav("/app"); }}>
+        <button className="newchat-btn" onClick={() => { newChat(); if (loc.pathname !== "/") nav("/"); }}>
           <IconPlus size={15} /> Chat baru
         </button>
         <div className="chat-list">
@@ -78,16 +64,12 @@ export default function Layout({ children }) {
 
         <div className="sidebar-footer">
           <div className="user-chip">
-            <div className="avatar">{user?.name?.[0]?.toUpperCase() || "U"}</div>
+            <div className="avatar"><BookLogo size={16} color="#fff" /></div>
             <div>
-              <div className="user-name">{user?.name}</div>
-              <div className="user-email">{user?.email}</div>
+              <div className="user-name">SitasiAI</div>
+              <div className="user-email">Tools Sitasi — ITS</div>
             </div>
           </div>
-          <motion.button className="logout" whileTap={{ scale: 0.97 }}
-            onClick={() => { logout(); nav("/login"); }}>
-            Keluar
-          </motion.button>
         </div>
       </aside>
 
@@ -97,7 +79,6 @@ export default function Layout({ children }) {
           <div />
           <div className="topbar-right">
             <span className="help"><IconHelp size={16} /> Help</span>
-            <div className="avatar small">{user?.name?.[0]?.toUpperCase() || "U"}</div>
           </div>
         </div>
         <div className="content">

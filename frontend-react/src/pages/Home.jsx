@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import api from "../api";
 import {
   IconCheck, IconFile, IconArrowRight, IconLibrary,
-  IconQuote, IconPlus, IconClose, IconSparkles,
+  IconClose, IconSparkles,
 } from "../components/Icons.jsx";
 import BookLogo from "../components/BookLogo.jsx";
 import { useChat } from "../chat.jsx";
@@ -37,8 +37,10 @@ export default function Home() {
   const messages = active?.messages ?? [];
   const [input, setInput] = useState("");
   const [topK, setTopK] = useState(5);
-  const [external, setExternal] = useState(false);   // cari di luar korpus (Semantic Scholar/OpenAlex)
-  const [citeMode, setCiteMode] = useState(false);   // auto-sitasi abstrak (sisip sitasi per kalimat)
+  // Dua mode saja: "sitasi" (auto-deteksi: 1 kalimat → rekomendasi tunggal,
+  // multi-kalimat → sitasi per kalimat) dan "cari" (pencarian paper/topik).
+  const [mode, setMode] = useState("sitasi");
+  const [thinkMode, setThinkMode] = useState("recommend");   // utk indikator proses
   const [loading, setLoading] = useState(false);
   const [drawer, setDrawer] = useState(null);   // candidates[] atau null
   const [focused, setFocused] = useState(false);
@@ -71,19 +73,27 @@ export default function Home() {
     setMessages((m) => [...m, userMsg]);
     setLoading(true);
     try {
-      if (citeMode && !isQuestion(q)) {
-        // Mode auto-sitasi abstrak: sisipkan (Penulis, Tahun) per kalimat + daftar referensi
-        const { data } = await api.post("/cite-abstract", { paragraph: q, top_k: topK, external });
-        setMessages((m) => [...m, { id: Date.now() + 1, role: "assistant", kind: "cite", query: q, cite: data }]);
-      } else if (isQuestion(q) || (external && q.split(/\s+/).length <= 25)) {
-        // pertanyaan ATAU input pendek saat mode eksternal → pencarian topik, bukan draf sitasi
-        const { data } = await api.post(external ? "/ask-external" : "/ask", { question: q, top_k: topK });
+      // jumlah kalimat bermakna (≥25 huruf) — penentu rekomendasi tunggal vs per-kalimat
+      const nSent = q.split(/(?<=[.!?])\s+/).filter((s) => s.trim().length >= 25).length;
+      if (mode === "cari") {
+        // Cari paper: pencarian topik (basis data / Semantic Scholar live)
+        setThinkMode("external");
+        const { data } = await api.post("/ask-external", { question: q, top_k: topK });
         setMessages((m) => [...m, { id: Date.now() + 1, role: "assistant", kind: "ask", query: q, answer: data.answer, candidates: data.candidates }]);
+      } else if (isQuestion(q)) {
+        setThinkMode("recommend");
+        const { data } = await api.post("/ask", { question: q, top_k: topK });
+        setMessages((m) => [...m, { id: Date.now() + 1, role: "assistant", kind: "ask", query: q, answer: data.answer, candidates: data.candidates }]);
+      } else if (nSent >= 2) {
+        // Multi-kalimat → auto-sitasi per kalimat + daftar referensi
+        setThinkMode("cite");
+        const { data } = await api.post("/cite-abstract", { paragraph: q, top_k: topK });
+        setMessages((m) => [...m, { id: Date.now() + 1, role: "assistant", kind: "cite", query: q, cite: data }]);
       } else {
-        const { data } = await api.post(external ? "/recommend-external" : "/recommend", {
-          paragraph: q, top_k: topK,
-        });
-        setMessages((m) => [...m, { id: Date.now() + 1, role: "assistant", query: q, result: data, external }]);
+        // Satu kalimat/klaim → rekomendasi 1 sitasi terbaik
+        setThinkMode("recommend");
+        const { data } = await api.post("/recommend", { paragraph: q, top_k: topK });
+        setMessages((m) => [...m, { id: Date.now() + 1, role: "assistant", query: q, result: data }]);
       }
     } catch (e) {
       setMessages((m) => [...m, { id: Date.now() + 1, role: "assistant", error: e?.response?.data?.detail || "Terjadi kesalahan." }]);
@@ -100,21 +110,13 @@ export default function Home() {
 
   return (
     <div className="chat">
-      {/* Header chat */}
-      <div className="chat-top">
-        <div className="chat-title"><IconSparkles size={18} /> Citation Assistant</div>
-        {messages.length > 0 && (
-          <button className="newchat" onClick={newChat}><IconPlus size={15} /> Chat baru</button>
-        )}
-      </div>
-
       {/* Thread */}
       <div className="chat-thread">
         {messages.length === 0 && !loading && (
           <div className="chat-empty">
             <div className="chat-empty-logo"><BookLogo size={44} rounded={13} /></div>
             <h2>Halo! Ada yang bisa dibantu?</h2>
-            <p>Tanyakan sesuatu, atau tempel paragraf draf untuk dicarikan sitasinya.</p>
+            <p>Pilih mode di bawah, lalu tempel paragraf/abstrak atau ketik topik pencarian.</p>
             <div className="chips">
               {EXAMPLES.map((ex, i) => (
                 <button key={i} className="chip" onClick={() => send(ex)}>{ex.slice(0, 70)}…</button>
@@ -151,40 +153,28 @@ export default function Home() {
 
         {loading && (
           <div className="msg assistant">
-            <div className="bubble bot typing"><span /><span /><span /></div>
-            <div style={{ fontSize: 12, color: "var(--muted, #888)", marginTop: 6, paddingLeft: 4 }}>
-              {citeMode
-                ? "Menyusun sitasi per kalimat — bisa 30–90 detik untuk abstrak panjang…"
-                : "Mencari referensi & menyusun sitasi — biasanya 15–60 detik…"}
-            </div>
+            <ThinkingIndicator mode={thinkMode} />
           </div>
         )}
         <div ref={endRef} />
       </div>
 
-      {/* Composer */}
+      {/* Composer (selalu tampil — layout lama yang fungsional) */}
       <div className="composer">
         <div className="composer-opts">
+          <div className="opt-k">
+            <span>Mode</span>
+            <select value={mode} onChange={(e) => setMode(e.target.value)}>
+              <option value="sitasi">Buat sitasi</option>
+              <option value="cari">Cari paper</option>
+            </select>
+          </div>
           <div className="opt-k">
             <span>Jumlah paper</span>
             <select value={topK} onChange={(e) => setTopK(+e.target.value)}>
               {[3, 5, 10].map((k) => <option key={k} value={k}>{k}</option>)}
             </select>
           </div>
-          <button
-            className={`chip${external ? " chip-active" : ""}`}
-            style={external ? { background: "var(--accent, #6366f1)", color: "#fff", borderColor: "transparent" } : {}}
-            onClick={() => setExternal((v) => !v)}
-            title="Cari kandidat dari Semantic Scholar/OpenAlex (di luar korpus lokal)">
-            🌐 Sumber eksternal {external ? "ON" : "OFF"}
-          </button>
-          <button
-            className={`chip${citeMode ? " chip-active" : ""}`}
-            style={citeMode ? { background: "#10b981", color: "#fff", borderColor: "transparent" } : {}}
-            onClick={() => setCiteMode((v) => !v)}
-            title="Tempel abstrak → sisipkan sitasi (Penulis, Tahun) di tiap kalimat + daftar referensi">
-            📝 Sitasi abstrak {citeMode ? "ON" : "OFF"}
-          </button>
         </div>
         <div className="composer-input">
           <textarea
@@ -244,6 +234,58 @@ export default function Home() {
   );
 }
 
+// ── Indikator proses ala "thinking" — shimmer + timer + tahapan ─────
+const STAGES = {
+  recommend: [
+    "Membuat abstrak hipotetis (HyDE)",
+    "Menghitung embedding SPECTER2",
+    "Mencari di basis data",
+    "Menimbang relevansi referensi",
+    "Menyusun kalimat sitasi",
+  ],
+  cite: [
+    "Memecah abstrak per kalimat",
+    "Mencari referensi tiap kalimat",
+    "Memverifikasi relevansi",
+    "Menulis ulang kalimat + sitasi",
+    "Menyusun daftar referensi",
+  ],
+  external: [
+    "Menyusun kueri pencarian",
+    "Mengambil kandidat dari Semantic Scholar",
+    "Re-ranking dengan SPECTER2",
+    "Menyusun jawaban",
+  ],
+};
+
+function ThinkingIndicator({ mode = "recommend" }) {
+  const [sec, setSec] = useState(0);
+  const stages = STAGES[mode] || STAGES.recommend;
+  useEffect(() => {
+    const t = setInterval(() => setSec((s) => s + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  // tahap maju tiap ~6 dtk, berhenti di tahap terakhir (jujur: estimasi, bukan telemetri)
+  const idx = Math.min(Math.floor(sec / 6), stages.length - 1);
+  return (
+    <div className="thinking">
+      <div className="thinking-head">
+        <svg className="thinking-spin" width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity=".2" strokeWidth="3" />
+          <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+        </svg>
+        <span className="thinking-shimmer">{stages[idx]}…</span>
+        <span className="thinking-time">{sec}s</span>
+      </div>
+      <div className="thinking-steps" aria-hidden="true">
+        {stages.map((s, i) => (
+          <span key={i} className={`thinking-dot${i < idx ? " done" : i === idx ? " now" : ""}`} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // Render markdown ringan pada jawaban: **teks** → tebal, baris baru dipertahankan.
 function MdLite({ text }) {
   const parts = String(text || "").split(/\*\*(.+?)\*\*/g);
@@ -275,7 +317,7 @@ function CiteBubble({ cite }) {
   return (
     <div className="bubble bot">
       <div className="bot-label"><IconCheck size={15} /> Abstrak Ter-sitasi
-        <span style={{ marginLeft: 8, fontSize: 11, color: "#10b981" }}>
+        <span style={{ marginLeft: 8, fontSize: 11, color: "#2AA198" }}>
           {cite.n_cited} sitasi · {cite.n_sentences} kalimat
         </span>
       </div>
@@ -291,7 +333,7 @@ function CiteBubble({ cite }) {
               <li key={r.n}>
                 {r.doi ? <a href={r.doi} target="_blank" rel="noreferrer">{r.paper_title}</a> : r.paper_title}
                 {" "}— <b>{r.citation}</b>
-                <span style={{ fontSize: 11, marginLeft: 6, color: r.source === "eksternal" ? "#6366f1" : "#10b981" }}>
+                <span style={{ fontSize: 11, marginLeft: 6, color: r.source === "eksternal" ? "#0D6CB5" : "#2AA198" }}>
                   {r.source === "eksternal" ? "🌐" : "📚"}
                 </span>
               </li>
@@ -316,8 +358,8 @@ function BotBubble({ m, onPapers }) {
       <div className="bot-label"><IconCheck size={15} /> Recommended Citation
         <span style={{
           marginLeft: 8, fontSize: 11, padding: "2px 8px", borderRadius: 10,
-          background: isExternal ? "rgba(99,102,241,.15)" : "rgba(16,185,129,.15)",
-          color: isExternal ? "#6366f1" : "#10b981",
+          background: isExternal ? "rgba(13,108,181,.12)" : "rgba(79,185,175,.16)",
+          color: isExternal ? "#0D6CB5" : "#2AA198",
         }}>{isExternal ? "🌐 Sumber eksternal" : "📚 Korpus lokal"}</span>
       </div>
       {r.fallback_note && <div className="alert" style={{ marginBottom: 8, fontSize: 12 }}>{r.fallback_note}</div>}

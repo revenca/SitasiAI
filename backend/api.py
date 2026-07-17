@@ -59,9 +59,18 @@ RATE_LIMIT_WIN = int(os.getenv("RATE_LIMIT_WIN", "60"))    # ...per detik window
 _hits: dict = defaultdict(deque)
 
 
-def check_rate_limit(user_id: int):
+def _client_key(request: Request) -> str:
+    """Kunci rate-limit per-IP. Di belakang reverse proxy (nginx senopati.its),
+    IP asli ada di X-Forwarded-For (ambil hop pertama)."""
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def check_rate_limit(key: str):
     now = _time.time()
-    q = _hits[user_id]
+    q = _hits[key]
     while q and now - q[0] > RATE_LIMIT_WIN:
         q.popleft()
     if len(q) >= RATE_LIMIT_N:
@@ -110,17 +119,28 @@ def me(user: models.User = Depends(auth.get_current_user)):
     return {"id": user.id, "name": user.name, "email": user.email}
 
 
-# ── Papers ───────────────────────────────────────────────────────────────────
+# ── Papers / Library ─────────────────────────────────────────────────────────
 @app.get("/papers")
-def list_papers(q: str = "", category: str = "", db: Session = Depends(get_db)):
+def list_papers(q: str = "", category: str = "", limit: int = 50, offset: int = 0,
+                db: Session = Depends(get_db)):
+    """Library: langsung ke basis data vektor (163k, Postgres) bila tersedia;
+    fallback ke tabel korpus 100-paper (SQLite)."""
+    try:
+        from backend import vectordb
+        if vectordb.available():
+            res = vectordb.list_papers(q=q, limit=min(limit, 100), offset=offset)
+            return {"source": "database", "total": res["total"], "papers": res["papers"]}
+    except Exception:
+        log.exception("list_papers via vectordb gagal; fallback korpus")
     query = db.query(models.Paper)
     if q:
         query = query.filter(models.Paper.title.ilike(f"%{q}%"))
     if category:
         query = query.filter(models.Paper.category == category)
     papers = query.order_by(models.Paper.title).all()
-    return [{"id": p.id, "title": p.title, "category": p.category, "n_chunks": p.n_chunks}
-            for p in papers]
+    return {"source": "korpus", "total": len(papers),
+            "papers": [{"title": p.title, "year": "", "authors": p.category,
+                        "cited_by": p.n_chunks, "doi": ""} for p in papers]}
 
 
 @app.get("/papers/categories")
@@ -130,66 +150,70 @@ def categories(db: Session = Depends(get_db)):
 
 
 # ── Recommend (butuh login) ──────────────────────────────────────────────────
-def _run_llm_endpoint(name, fn, user_id):
-    """Rate-limit + logging seragam untuk endpoint yang memanggil LLM."""
-    check_rate_limit(user_id)
+def _run_llm_endpoint(name, fn, request: Request):
+    """Rate-limit per-IP + logging seragam untuk endpoint yang memanggil LLM."""
+    key = _client_key(request)
+    check_rate_limit(key)
     try:
         return fn()
     except HTTPException:
         raise
     except Exception:
-        log.exception("endpoint %s gagal (user=%s)", name, user_id)
+        log.exception("endpoint %s gagal (ip=%s)", name, key)
         raise HTTPException(status_code=500, detail="Terjadi kesalahan internal. Coba lagi.")
 
 
 @app.post("/recommend")
-def recommend(req: RecommendReq, db: Session = Depends(get_db),
+def recommend(req: RecommendReq, request: Request, db: Session = Depends(get_db),
               user: models.User = Depends(auth.get_current_user)):
     res = _run_llm_endpoint("/recommend", lambda: rag_engine.recommend(
-        req.paragraph, top_k=req.top_k, use_hyde=True, use_cot=True), user.id)
-    db.add(models.SearchHistory(user_id=user.id, query=req.paragraph[:1000],
-                               citation_text=res.get("citation_text",""),
-                               best_paper=res.get("best_reference_paper","")))
-    db.commit()
+        req.paragraph, top_k=req.top_k, use_hyde=True, use_cot=True), request)
+    if user.id:                             # anonim (AUTH_DISABLED) → tanpa history
+        db.add(models.SearchHistory(user_id=user.id, query=req.paragraph[:1000],
+                                   citation_text=res.get("citation_text",""),
+                                   best_paper=res.get("best_reference_paper","")))
+        db.commit()
     return res
 
 
 @app.post("/recommend-external")
-def recommend_external(req: RecommendReq, db: Session = Depends(get_db),
+def recommend_external(req: RecommendReq, request: Request, db: Session = Depends(get_db),
                        user: models.User = Depends(auth.get_current_user)):
     """Rekomendasi sitasi dari sumber EKSTERNAL (Semantic Scholar live)."""
     res = _run_llm_endpoint("/recommend-external", lambda: rag_engine.recommend_external(
-        req.paragraph, top_k=req.top_k), user.id)
-    db.add(models.SearchHistory(user_id=user.id, query=req.paragraph[:1000],
-                               citation_text=res.get("citation_text",""),
-                               best_paper=res.get("best_reference_paper","")))
-    db.commit()
+        req.paragraph, top_k=req.top_k), request)
+    if user.id:                             # anonim (AUTH_DISABLED) → tanpa history
+        db.add(models.SearchHistory(user_id=user.id, query=req.paragraph[:1000],
+                                   citation_text=res.get("citation_text",""),
+                                   best_paper=res.get("best_reference_paper","")))
+        db.commit()
     return res
 
 
 @app.post("/cite-abstract")
-def cite_abstract(req: RecommendReq, db: Session = Depends(get_db),
+def cite_abstract(req: RecommendReq, request: Request, db: Session = Depends(get_db),
                   user: models.User = Depends(auth.get_current_user)):
     """Auto-sitasi abstrak: sisipkan (Penulis, Tahun) per kalimat + daftar referensi."""
     res = _run_llm_endpoint("/cite-abstract", lambda: rag_engine.cite_abstract(
-        req.paragraph, top_k=req.top_k, prefer_external=req.external), user.id)
-    db.add(models.SearchHistory(user_id=user.id, query=req.paragraph[:1000],
-                               citation_text=res.get("cited_abstract", "")[:2000], best_paper=""))
-    db.commit()
+        req.paragraph, top_k=req.top_k, prefer_external=req.external), request)
+    if user.id:
+        db.add(models.SearchHistory(user_id=user.id, query=req.paragraph[:1000],
+                                   citation_text=res.get("cited_abstract", "")[:2000], best_paper=""))
+        db.commit()
     return res
 
 
 @app.post("/ask")
-def ask(req: AskReq, user: models.User = Depends(auth.get_current_user)):
+def ask(req: AskReq, request: Request, user: models.User = Depends(auth.get_current_user)):
     return _run_llm_endpoint("/ask", lambda: rag_engine.answer_question(
-        req.question, top_k=req.top_k), user.id)
+        req.question, top_k=req.top_k), request)
 
 
 @app.post("/ask-external")
-def ask_external(req: AskReq, user: models.User = Depends(auth.get_current_user)):
+def ask_external(req: AskReq, request: Request, user: models.User = Depends(auth.get_current_user)):
     """Pertanyaan/topik pendek → cari paper dari sumber eksternal + jawaban singkat."""
     return _run_llm_endpoint("/ask-external", lambda: rag_engine.ask_external(
-        req.question, top_k=req.top_k), user.id)
+        req.question, top_k=req.top_k), request)
 
 
 @app.get("/history")

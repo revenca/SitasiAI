@@ -100,6 +100,33 @@ def search(query_emb, top_k: int = 5, source: str = None) -> list:
     return out
 
 
+def list_papers(q: str = "", limit: int = 50, offset: int = 0) -> dict:
+    """Daftar/cari paper di basis data (untuk halaman Library).
+    Return {total, papers:[{title,year,authors,cited_by,doi}]}."""
+    c = _connect()
+    if c is None:
+        return {"total": 0, "papers": []}
+    like = f"%{q}%"
+    with c.cursor() as cur:
+        if q:
+            cur.execute("SELECT count(*) FROM documents WHERE paper_title ILIKE %s", (like,))
+            total = cur.fetchone()[0]
+            cur.execute(
+                "SELECT paper_title, year, authors, cited_by, doi FROM documents "
+                "WHERE paper_title ILIKE %s ORDER BY cited_by DESC NULLS LAST LIMIT %s OFFSET %s",
+                (like, limit, offset))
+        else:
+            cur.execute("SELECT count(*) FROM documents")
+            total = cur.fetchone()[0]
+            cur.execute(
+                "SELECT paper_title, year, authors, cited_by, doi FROM documents "
+                "ORDER BY cited_by DESC NULLS LAST LIMIT %s OFFSET %s", (limit, offset))
+        rows = cur.fetchall()
+    return {"total": total,
+            "papers": [{"title": t, "year": y or "", "authors": a or "",
+                        "cited_by": cb or 0, "doi": d or ""} for t, y, a, cb, d in rows]}
+
+
 # ── Untuk migrasi (dipakai backend/migrate_to_pgvector.py) ────────────────────
 def ensure_schema(dim: int = 768):
     c = _connect()

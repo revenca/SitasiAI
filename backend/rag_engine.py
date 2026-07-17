@@ -13,7 +13,10 @@ import faiss
 import torch
 import requests
 import numpy as np
+import threading
 from concurrent.futures import ThreadPoolExecutor
+
+_embed_lock = threading.Lock()   # model embedding satu, panggilan paralel harus antre
 from pathlib import Path
 from openai import OpenAI
 from transformers import AutoTokenizer
@@ -39,6 +42,40 @@ ADAPTER_NAME = "allenai/specter2"
 GEN_MODEL    = os.getenv("GEN_MODEL", "openai/gpt-4o-mini")
 OPENROUTER_API_KEY  = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+# ── Penjaga presisi sitasi (anti false-positive) ─────────────────────────────
+# Lapis 1: gerbang skor — kandidat harus >= MIN_SIM DAN dalam jendela REL_WIN dari terbaik.
+# Lapis 3: verifikasi LLM independen atas referensi terpilih (lihat _verify_support).
+MIN_SIM  = float(os.getenv("MIN_SIM", "0.70"))    # ambang cosine absolut (buang sampah)
+REL_WIN  = float(os.getenv("REL_WIN", "0.08"))    # jendela relatif thd skor tertinggi
+VERIFY_CITATION = os.getenv("VERIFY_CITATION", "1") == "1"
+
+
+def _gate_candidates(cands: list) -> list:
+    """Saring kandidat: skor >= MIN_SIM dan tidak jauh di bawah kandidat terbaik."""
+    if not cands:
+        return []
+    top = max(c.get("score", 0.0) for c in cands)
+    return [c for c in cands
+            if c.get("score", 0.0) >= MIN_SIM and c.get("score", 0.0) >= top - REL_WIN]
+
+
+def _verify_support(claim: str, ref: dict) -> bool:
+    """Lapis 3: pemeriksaan independen — apakah referensi BENAR-BENAR mendukung klaim
+    spesifik (bukan sekadar setopik). Gagal verifikasi → sitasi ditolak."""
+    if not VERIFY_CITATION or not ref:
+        return True
+    out = _call_llm(
+        "You are a strict citation auditor. Decide whether the reference DIRECTLY supports "
+        "the SPECIFIC claim below — same finding, method, or fact. Being on the same broad "
+        "topic is NOT enough. When in doubt, answer NO.\n\n"
+        f"Claim:\n{claim[:800]}\n\n"
+        f"Reference title: {ref.get('paper_title','')}\n"
+        f"Reference abstract: {(ref.get('chunk_text') or '')[:900]}\n\n"
+        "Answer with exactly one word: YES or NO.",
+        temperature=0)
+    return out.strip().upper().startswith("Y")
+
 
 # ── Setup HyDE — DISAMAKAN dengan eksperimen (run_phyde_endtoend.ps1) ─────────
 # Proper HyDE (Gao et al.): N abstrak hipotetis + embedding query, dirata-rata + L2-norm.
@@ -95,27 +132,62 @@ def init():
     _metadata = json.load(open(META_FILE, encoding="utf-8"))
     _client   = OpenAI(api_key=OPENROUTER_API_KEY, base_url=OPENROUTER_BASE_URL,
                        default_headers={"HTTP-Referer": "citation-rec", "X-Title": "Citation Recommender"})
+    _build_llm_chain()
+
+
+# ── Rantai LLM 3 tingkat: Groq (gratis) → OpenRouter/GPT-4o-mini → DeepSeek ──
+# Tiap provider dicoba berurutan; 429/limit/saldo habis → lanjut provider berikut.
+GROQ_API_KEY   = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL     = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+DEEPSEEK_KEY   = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+_llm_chain: list = []          # [(nama, client, model), ...] urut prioritas
+
+
+def _build_llm_chain():
+    global _llm_chain
+    chain = []
+    if GROQ_API_KEY:
+        chain.append(("groq", OpenAI(api_key=GROQ_API_KEY,
+                                     base_url="https://api.groq.com/openai/v1"), GROQ_MODEL))
+    chain.append(("openrouter", _client, GEN_MODEL))
+    if DEEPSEEK_KEY:
+        chain.append(("deepseek", OpenAI(api_key=DEEPSEEK_KEY,
+                                         base_url="https://api.deepseek.com"), DEEPSEEK_MODEL))
+    _llm_chain = chain
+    print("[LLM chain]", " -> ".join(f"{n}({m})" for n, _, m in chain))
 
 
 def _call_llm(prompt: str, temperature: float = 0.3) -> str:
-    for _ in range(3):
-        try:
-            r = _client.chat.completions.create(
-                model=GEN_MODEL, messages=[{"role": "user", "content": prompt}],
-                temperature=temperature)
-            return r.choices[0].message.content.strip()
-        except Exception:
-            continue
+    """Coba tiap provider dalam rantai (2 percobaan per provider).
+    Limit/error → jatuh ke provider berikutnya. Return "" bila semua gagal."""
+    for name, client, model in (_llm_chain or [("openrouter", _client, GEN_MODEL)]):
+        for attempt in range(2):
+            try:
+                r = client.chat.completions.create(
+                    model=model, messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature, timeout=60)
+                out = (r.choices[0].message.content or "").strip()
+                if out:
+                    return out
+            except Exception as e:
+                msg = str(e).lower()
+                # limit/kuota/saldo → tak usah retry provider ini, langsung pindah
+                if any(k in msg for k in ("429", "rate", "quota", "insufficient",
+                                          "credit", "balance", "402")):
+                    break
+                time.sleep(0.5)
     return ""
 
 
 def embed(text: str):
-    x = _tokenizer(text, return_tensors="pt", truncation=True, max_length=512, padding=True)
-    x = {k: v.to(_device) for k, v in x.items()}
-    with torch.no_grad():
-        o = _model(**x)
-    e = torch.nn.functional.normalize(o.last_hidden_state[:, 0, :], dim=1)
-    return e.squeeze().cpu().numpy()
+    with _embed_lock:                 # aman dipanggil dari beberapa thread
+        x = _tokenizer(text, return_tensors="pt", truncation=True, max_length=512, padding=True)
+        x = {k: v.to(_device) for k, v in x.items()}
+        with torch.no_grad():
+            o = _model(**x)
+        e = torch.nn.functional.normalize(o.last_hidden_state[:, 0, :], dim=1)
+        return e.squeeze().cpu().numpy()
 
 
 def hyde_generate(paragraph: str) -> str:
@@ -190,6 +262,23 @@ def retrieve(query_emb, top_k: int = 5, source_paper: str = ""):
     return out
 
 
+def _extract_json(raw: str):
+    """Ambil objek JSON dari keluaran LLM — tahan code-fence dan narasi pembuka
+    (Llama sering menulis reasoning dulu baru JSON di akhir)."""
+    raw = re.sub(r"^```(?:json)?\s*", "", (raw or "").strip())
+    raw = re.sub(r"\s*```$", "", raw)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    m = re.search(r"\{.*\}", raw, re.S)          # blok {...} terluas di tengah narasi
+    if m:
+        try:
+            return json.loads(m.group())
+        except json.JSONDecodeError:
+            return None
+    return None
+
 def cot_generate(paragraph: str, chunks: list) -> dict:
     if not chunks:
         return {"relevant": False, "citation_text": "", "best_reference_paper": "", "reasoning": ""}
@@ -204,7 +293,9 @@ def cot_generate(paragraph: str, chunks: list) -> dict:
         "Step 1: What is the main claim/method/finding in the source paragraph?\n"
         "Step 2: What specific facts does each retrieved reference contain?\n"
         "Step 3: Which reference most directly supports the source claim (by overlap of facts)?\n"
-        "Step 4: Is the best reference truly relevant? (Yes/No)\n"
+        "Step 4: Is the best reference truly relevant — does its content substantively "
+        "support the claim (same method, finding, or subject matter)? Answer No only if "
+        "the connection is merely tangential or superficial.\n"
         "Step 5: If relevant, write ONE coherent academic sentence (in the SAME language as the "
         "source paragraph) that explains what the chosen reference contributes or demonstrates "
         "in relation to the source claim, as it would appear in a literature review.\n"
@@ -214,20 +305,20 @@ def cot_generate(paragraph: str, chunks: list) -> dict:
         "  - It must be grounded in the chosen reference (no invented facts) but should READ "
         "naturally and clearly explain the connection — not just list facts.\n"
         "  - Do NOT include the paper title inside the sentence.\n\n"
+        "IMPORTANT: Do NOT write your step-by-step reasoning as prose. "
+        "Output ONLY the JSON object.\n"
         "Output format (JSON only):\n"
         '{ "relevant": true, "best_reference_paper": "title", '
         '"best_reference_chunk": "chunk", "citation_text": "sentence or null", "reasoning": "brief" }'
     )
     raw = _call_llm(prompt, temperature=COT_TEMP)
-    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip()); raw = re.sub(r"\s*```$", "", raw)
-    try:
-        r = json.loads(raw)
-        r["relevant"] = bool(r.get("relevant", False))
-        for k in ("best_reference_paper", "best_reference_chunk", "citation_text", "reasoning"):
-            v = r.get(k); r[k] = "" if v in (None, "null") else str(v)
-        return r
-    except json.JSONDecodeError:
+    r = _extract_json(raw)
+    if r is None:
         return {"relevant": False, "citation_text": "", "best_reference_paper": "", "reasoning": ""}
+    r["relevant"] = bool(r.get("relevant", False))
+    for k in ("best_reference_paper", "best_reference_chunk", "citation_text", "reasoning"):
+        v = r.get(k); r[k] = "" if v in (None, "null") else str(v)
+    return r
 
 
 def simple_generate(paragraph: str, chunks: list) -> dict:
@@ -244,15 +335,13 @@ def simple_generate(paragraph: str, chunks: list) -> dict:
         '"best_reference_chunk": "chunk", "citation_text": "sentence or null", "reasoning": "brief" }'
     )
     raw = _call_llm(prompt, temperature=0.2)
-    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip()); raw = re.sub(r"\s*```$", "", raw)
-    try:
-        r = json.loads(raw)
-        r["relevant"] = bool(r.get("relevant", False))
-        for k in ("best_reference_paper", "best_reference_chunk", "citation_text", "reasoning"):
-            v = r.get(k); r[k] = "" if v in (None, "null") else str(v)
-        return r
-    except json.JSONDecodeError:
+    r = _extract_json(raw)
+    if r is None:
         return {"relevant": False, "citation_text": "", "best_reference_paper": "", "reasoning": ""}
+    r["relevant"] = bool(r.get("relevant", False))
+    for k in ("best_reference_paper", "best_reference_chunk", "citation_text", "reasoning"):
+        v = r.get(k); r[k] = "" if v in (None, "null") else str(v)
+    return r
 
 
 def answer_question(question: str, top_k: int = 5) -> dict:
@@ -306,11 +395,50 @@ def recommend(paragraph: str, top_k: int = 5, use_hyde: bool = True, use_cot: bo
     Return: { citation_text, best_reference_paper, relevant, reasoning, candidates[], source_mode }
     """
     init()
+    # HYBRID RETRIEVAL: fetch live Semantic Scholar dijalankan PARALEL dgn HyDE —
+    # hasilnya MEMPERKAYA kandidat (bukan hanya fallback): konteks CoT lebih segar/kaya.
+    fut, _hx = None, None
+    if allow_external and S2_API_KEY:
+        _hx = ThreadPoolExecutor(max_workers=1)
+        fut = _hx.submit(lambda: fetch_external(
+            _search_keywords(paragraph), limit=8, alt_query=paragraph[:300]))
+
     # HyDE proper (N=5, include-query, temp 0.7) — identik dengan setup evaluasi
     emb = hyde_embed(paragraph) if use_hyde else embed(paragraph)
     candidates = search_database(emb, top_k=top_k)          # basis data 163k (atau 100-paper)
+
+    if fut is not None:
+        try:
+            papers = fut.result(timeout=20) or []
+        except Exception:
+            papers = []
+        finally:
+            _hx.shutdown(wait=False)
+        seen = {c["paper_title"].strip().lower() for c in candidates}
+        live = []
+        for p in papers:
+            if (p.get("title") or "").strip().lower() in seen:
+                continue                                     # dedupe vs basis data
+            v = embed(f"{p['title']} {p['abstract']}"[:2000])
+            a, y, apa = _external_citation(p)
+            live.append({"paper_title": p["title"], "authors": a, "year": y, "citation": apa,
+                         "chunk_text": p["abstract"], "score": float(np.dot(emb, v)),
+                         "doi": p.get("doi", ""), "cited_by": p.get("cited_by", 0),
+                         "source": "Semantic Scholar (live)"})
+        live.sort(key=lambda c: -c["score"])
+        candidates = candidates + live[:3]                   # perkaya konteks: maks 3 live terbaik
+
+    candidates = _gate_candidates(candidates)                # Lapis 1: buang kandidat lemah
     gen = (cot_generate(paragraph, candidates) if use_cot
            else simple_generate(paragraph, candidates))
+
+    # Lapis 3: verifikasi independen atas referensi terpilih — gagal ⇒ dianggap reject
+    if gen.get("relevant"):
+        _ref0 = _match_ref(candidates, gen.get("best_reference_paper", ""))
+        if not _verify_support(paragraph, _ref0):
+            gen["relevant"] = False
+            gen["reasoning"] = (gen.get("reasoning", "") +
+                                " [Ditolak verifikasi: referensi hanya setopik, tidak mendukung klaim spesifik.]")
 
     # FALLBACK BERTINGKAT: bila korpus lokal tidak punya sitasi yang mendukung klaim
     # (CoT memutuskan relevant=False), ambil dari sumber eksternal live (Semantic Scholar).
@@ -335,6 +463,7 @@ def recommend(paragraph: str, top_k: int = 5, use_hyde: bool = True, use_cot: bo
     # Tulis ulang akademik + sisip sitasi (untuk mode Automated Citation)
     apa_key = ref.get("citation", "") if ref else ""
     cited_paragraph = cite_rewrite(paragraph, apa_key) if (gen.get("relevant") and apa_key) else ""
+    picked_live = bool(ref and "live" in str(ref.get("source", "")).lower())
 
     return {
         "citation_text":           gen.get("citation_text", ""),
@@ -343,11 +472,12 @@ def recommend(paragraph: str, top_k: int = 5, use_hyde: bool = True, use_cot: bo
         "best_reference_year":     ref.get("year", "") if ref else "",
         "best_reference_score":    ref.get("score") if ref else None,
         "best_reference_citation": apa_key,
+        "best_reference_doi":      ref.get("doi", "") if ref else "",
         "cited_paragraph":         cited_paragraph,
         "relevant":                gen.get("relevant", False),
         "reasoning":               gen.get("reasoning", ""),
         "candidates":              candidates,
-        "source_mode":             "lokal",
+        "source_mode":             "eksternal" if picked_live else "lokal",
     }
 
 
@@ -668,8 +798,14 @@ def _find_external_ref(sentence: str, top_k: int = 5):
         a, y, apa = _external_citation(p)
         cand.append({"paper_title": p["title"], "authors": a, "year": y, "citation": apa,
                      "chunk_text": p["abstract"], "score": s, "doi": p.get("doi", "")})
+    cand = _gate_candidates(cand)                            # Lapis 1
+    if not cand:
+        return None
     gen = cot_generate(sentence, cand)
-    return _match_ref(cand, gen.get("best_reference_paper", "")) if gen.get("relevant") else None
+    if not gen.get("relevant"):
+        return None
+    ref = _match_ref(cand, gen.get("best_reference_paper", ""))
+    return ref if _verify_support(sentence, ref) else None   # Lapis 3
 
 
 def _rewrite_with_reference(sentence: str, ref: dict) -> str:
@@ -697,36 +833,48 @@ def _rewrite_with_reference(sentence: str, ref: dict) -> str:
     return out
 
 
-def cite_abstract(paragraph: str, top_k: int = 5, allow_external: bool = True,
-                  prefer_external: bool = False) -> dict:
-    """Tiap kalimat abstrak: cari referensi → tulis ulang memuat kontribusi paper + sitasi.
-    prefer_external=True (toggle 🌐): ambil langsung dari eksternal live, lewati korpus lokal."""
-    init()
-    out_sents, refs, seen = [], [], {}
-    for sent in _split_sentences(paragraph):
-        ref, source = None, "lokal"
-        if prefer_external:                                       # 🌐 ON → eksternal langsung
+def _cite_one_sentence(sent: str, top_k: int, allow_external: bool, prefer_external: bool):
+    """Proses 1 kalimat (dipanggil paralel): cari referensi → rewrite dgn sitasi.
+    Return (kalimat_hasil, ref|None, source)."""
+    ref, source = None, "lokal"
+    if prefer_external:                                       # 🌐 ON → eksternal langsung
+        ref = _find_external_ref(sent, top_k)
+        if ref:
+            source = "eksternal"
+    else:
+        cand = _gate_candidates(search_database(embed(sent), top_k=top_k))  # Lapis 1
+        gen = cot_generate(sent, cand) if cand else {"relevant": False}
+        if gen.get("relevant"):
+            ref = _match_ref(cand, gen.get("best_reference_paper", ""))
+            if not _verify_support(sent, ref):                # Lapis 3
+                ref = None
+        if ref is None and allow_external:                    # fallback eksternal live
             ref = _find_external_ref(sent, top_k)
             if ref:
                 source = "eksternal"
-        else:
-            cand = search_database(embed(sent), top_k=top_k)      # basis data 163k
-            gen = cot_generate(sent, cand)
-            if gen.get("relevant"):
-                ref = _match_ref(cand, gen.get("best_reference_paper", ""))
-            if ref is None and allow_external:                    # fallback eksternal live
-                ref = _find_external_ref(sent, top_k)
-                if ref:
-                    source = "eksternal"
-        if ref and ref.get("citation"):
-            c = ref["citation"]
-            if c not in seen:
-                seen[c] = len(refs) + 1
-                refs.append({"n": len(refs) + 1, "citation": c, "paper_title": ref["paper_title"],
-                             "authors": ref.get("authors", ""), "year": ref.get("year", ""),
-                             "doi": ref.get("doi", ""), "source": source})
-            out_sents.append(_rewrite_with_reference(sent, ref))  # rewrite memuat isi paper
-        else:
-            out_sents.append(sent)                                # tak ada referensi → biarkan
+    if ref and ref.get("citation"):
+        return _rewrite_with_reference(sent, ref), ref, source
+    return sent, None, source
+
+
+def cite_abstract(paragraph: str, top_k: int = 5, allow_external: bool = True,
+                  prefer_external: bool = False) -> dict:
+    """Tiap kalimat abstrak: cari referensi → tulis ulang memuat kontribusi paper + sitasi.
+    Kalimat diproses PARALEL (independen) → latensi ~1 kalimat, bukan jumlah kalimat.
+    prefer_external=True (toggle 🌐): ambil langsung dari eksternal live, lewati korpus lokal."""
+    init()
+    sents = _split_sentences(paragraph)
+    with ThreadPoolExecutor(max_workers=min(len(sents), 4) or 1) as ex:
+        results = list(ex.map(
+            lambda s: _cite_one_sentence(s, top_k, allow_external, prefer_external), sents))
+    out_sents, refs, seen = [], [], {}
+    for text, ref, source in results:                         # urutan kalimat terjaga
+        out_sents.append(text)
+        if ref and ref.get("citation") and ref["citation"] not in seen:
+            seen[ref["citation"]] = len(refs) + 1
+            refs.append({"n": len(refs) + 1, "citation": ref["citation"],
+                         "paper_title": ref["paper_title"], "authors": ref.get("authors", ""),
+                         "year": ref.get("year", ""), "doi": ref.get("doi", ""),
+                         "source": source})
     return {"cited_abstract": " ".join(out_sents), "references": refs,
             "n_sentences": len(out_sents), "n_cited": len(refs)}

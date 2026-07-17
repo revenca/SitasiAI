@@ -1,9 +1,9 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { useAuth } from "./auth.jsx";
 
 const ChatCtx = createContext(null);
 
-const keyFor = (u) => `sitasi_chats_${u?.id ?? u?.email ?? "anon"}`;
+// Mode tools (tanpa login): riwayat chat disimpan per-browser (localStorage), satu ruang "anon".
+const keyFor = () => "sitasi_chats_anon";
 const uid = () => `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 const mkSession = () => ({ id: uid(), title: "Chat baru", messages: [], updatedAt: Date.now() });
 
@@ -13,8 +13,7 @@ function load(key) {
 }
 
 export function ChatProvider({ children }) {
-  const { user } = useAuth();
-  const key = keyFor(user);
+  const key = keyFor();
 
   const [sessions, setSessions] = useState(() => {
     const s = load(key); return s.length ? s : [mkSession()];

@@ -13,8 +13,17 @@ from backend import models
 SECRET    = os.getenv("JWT_SECRET", "thesis-citation-secret-change-me")
 ALGORITHM = "HS256"
 TOKEN_TTL_DAYS = 7
+# Mode tools internal (deploy senopati.its): AUTH_DISABLED=1 → endpoint jalan TANPA login.
+AUTH_DISABLED = os.getenv("AUTH_DISABLED", "0") == "1"
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=not AUTH_DISABLED)
+
+
+class AnonymousUser:
+    """User pengganti saat AUTH_DISABLED — id 0, tidak tersimpan di DB."""
+    id = 0
+    name = "Anonim"
+    email = "anon@local"
 
 
 def hash_password(plain: str) -> str:
@@ -34,7 +43,9 @@ def create_token(user_id: int, email: str) -> str:
     return jwt.encode(payload, SECRET, algorithm=ALGORITHM)
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> models.User:
+def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    if AUTH_DISABLED:                       # mode tools: tanpa login
+        return AnonymousUser()
     cred_err = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                             detail="Token tidak valid", headers={"WWW-Authenticate": "Bearer"})
     try:

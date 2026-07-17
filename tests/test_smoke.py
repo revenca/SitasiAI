@@ -11,6 +11,7 @@ import os
 import uuid
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ["AUTH_DISABLED"] = "0"   # test selalu dgn auth ON (cegah endpoint LLM tereksekusi)
 
 import pytest
 from fastapi.testclient import TestClient
@@ -62,7 +63,10 @@ def test_me_requires_auth(client, token):
 
 def test_papers_listing(client):
     r = client.get("/papers")
-    assert r.status_code == 200 and isinstance(r.json(), list)
+    assert r.status_code == 200
+    d = r.json()
+    assert isinstance(d, dict) and "papers" in d and "total" in d
+    assert isinstance(d["papers"], list)
 
 
 def test_llm_endpoints_require_auth(client):

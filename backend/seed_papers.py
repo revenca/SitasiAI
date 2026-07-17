@@ -37,7 +37,7 @@ def main():
         for m in json.load(open(meta_file, encoding="utf-8")):
             chunk_count[m["paper_title"]] = chunk_count.get(m["paper_title"], 0) + 1
 
-    txt_dir = ROOT / "output_teks_clean"
+    txt_dir = ROOT / "evaluasi" / "output_teks_clean"
     titles = [os.path.splitext(f)[0] for f in os.listdir(txt_dir)] if txt_dir.exists() else []
 
     db.query(models.Paper).delete()

@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-TEKS_DIR = ROOT / "output_teks_clean"
+TEKS_DIR = ROOT / "evaluasi" / "output_teks_clean"
 OUT = Path(__file__).resolve().parent / "data" / "paper_meta.json"
 
 MARKERS = [
