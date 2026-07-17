@@ -4,8 +4,8 @@
 #
 # Jalankan:  .\run_phyde_endtoend.ps1
 
-$root = "d:\TUGAS AKHIR\TA"
-$py   = "$root\.venv\Scripts\python.exe"
+$root = "d:\TUGAS AKHIR\TA\evaluasi"
+$py   = "d:\TUGAS AKHIR\TA\.venv\Scripts\python.exe"
 $res  = "$root\hasil_eksperimen"
 Set-Location $root
 
