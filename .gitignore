@@ -70,3 +70,10 @@ output_teks_clean/
 # SQLite DB backend (kalau ada)
 *.db
 *.sqlite3
+
+# External index (besar, jangan commit)
+external_index/data/
+external_index/vecs/
+external_index/*.bin
+external_index/*checkpoint*.json
+external_index/metadata_external.jsonl

@@ -3,7 +3,10 @@ backend/api.py — REST API (FastAPI): Auth + Papers + Recommend.
 Jalankan:  python -m uvicorn backend.api:app --reload --port 8000
 Docs   :  http://localhost:8000/docs
 """
-from fastapi import FastAPI, Depends, HTTPException
+import os
+import logging
+
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
@@ -11,10 +14,17 @@ from sqlalchemy.orm import Session
 from backend import rag_engine, models, auth
 from backend.database import Base, engine, get_db
 
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("sitasiai")
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Citation Recommender API", version="1.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# CORS dibatasi ke origin frontend (set CORS_ORIGINS di .env; pisah koma)
+_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=_origins,
+                   allow_methods=["*"], allow_headers=["*"], allow_credentials=True)
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -32,10 +42,33 @@ class RecommendReq(BaseModel):
     top_k: int = 5
     use_hyde: bool = True
     use_cot: bool = True
+    external: bool = False
 
 class AskReq(BaseModel):
     question: str
     top_k: int = 5
+
+
+# ── Rate limit sederhana (sliding window per user) ───────────────────────────
+# Endpoint LLM itu mahal (6–8 panggilan API berbayar per request) — batasi per user.
+import time as _time
+from collections import defaultdict, deque
+
+RATE_LIMIT_N   = int(os.getenv("RATE_LIMIT_N", "10"))      # maks request...
+RATE_LIMIT_WIN = int(os.getenv("RATE_LIMIT_WIN", "60"))    # ...per detik window
+_hits: dict = defaultdict(deque)
+
+
+def check_rate_limit(user_id: int):
+    now = _time.time()
+    q = _hits[user_id]
+    while q and now - q[0] > RATE_LIMIT_WIN:
+        q.popleft()
+    if len(q) >= RATE_LIMIT_N:
+        raise HTTPException(status_code=429,
+                            detail=f"Terlalu banyak permintaan — maks {RATE_LIMIT_N} per "
+                                   f"{RATE_LIMIT_WIN} detik. Coba lagi sebentar.")
+    q.append(now)
 
 
 # ── Startup ──────────────────────────────────────────────────────────────────
@@ -97,12 +130,23 @@ def categories(db: Session = Depends(get_db)):
 
 
 # ── Recommend (butuh login) ──────────────────────────────────────────────────
+def _run_llm_endpoint(name, fn, user_id):
+    """Rate-limit + logging seragam untuk endpoint yang memanggil LLM."""
+    check_rate_limit(user_id)
+    try:
+        return fn()
+    except HTTPException:
+        raise
+    except Exception:
+        log.exception("endpoint %s gagal (user=%s)", name, user_id)
+        raise HTTPException(status_code=500, detail="Terjadi kesalahan internal. Coba lagi.")
+
+
 @app.post("/recommend")
 def recommend(req: RecommendReq, db: Session = Depends(get_db),
               user: models.User = Depends(auth.get_current_user)):
-    res = rag_engine.recommend(req.paragraph, top_k=req.top_k,
-                               use_hyde=req.use_hyde, use_cot=req.use_cot)
-    # simpan history
+    res = _run_llm_endpoint("/recommend", lambda: rag_engine.recommend(
+        req.paragraph, top_k=req.top_k, use_hyde=True, use_cot=True), user.id)
     db.add(models.SearchHistory(user_id=user.id, query=req.paragraph[:1000],
                                citation_text=res.get("citation_text",""),
                                best_paper=res.get("best_reference_paper","")))
@@ -110,9 +154,42 @@ def recommend(req: RecommendReq, db: Session = Depends(get_db),
     return res
 
 
+@app.post("/recommend-external")
+def recommend_external(req: RecommendReq, db: Session = Depends(get_db),
+                       user: models.User = Depends(auth.get_current_user)):
+    """Rekomendasi sitasi dari sumber EKSTERNAL (Semantic Scholar live)."""
+    res = _run_llm_endpoint("/recommend-external", lambda: rag_engine.recommend_external(
+        req.paragraph, top_k=req.top_k), user.id)
+    db.add(models.SearchHistory(user_id=user.id, query=req.paragraph[:1000],
+                               citation_text=res.get("citation_text",""),
+                               best_paper=res.get("best_reference_paper","")))
+    db.commit()
+    return res
+
+
+@app.post("/cite-abstract")
+def cite_abstract(req: RecommendReq, db: Session = Depends(get_db),
+                  user: models.User = Depends(auth.get_current_user)):
+    """Auto-sitasi abstrak: sisipkan (Penulis, Tahun) per kalimat + daftar referensi."""
+    res = _run_llm_endpoint("/cite-abstract", lambda: rag_engine.cite_abstract(
+        req.paragraph, top_k=req.top_k, prefer_external=req.external), user.id)
+    db.add(models.SearchHistory(user_id=user.id, query=req.paragraph[:1000],
+                               citation_text=res.get("cited_abstract", "")[:2000], best_paper=""))
+    db.commit()
+    return res
+
+
 @app.post("/ask")
 def ask(req: AskReq, user: models.User = Depends(auth.get_current_user)):
-    return rag_engine.answer_question(req.question, top_k=req.top_k)
+    return _run_llm_endpoint("/ask", lambda: rag_engine.answer_question(
+        req.question, top_k=req.top_k), user.id)
+
+
+@app.post("/ask-external")
+def ask_external(req: AskReq, user: models.User = Depends(auth.get_current_user)):
+    """Pertanyaan/topik pendek → cari paper dari sumber eksternal + jawaban singkat."""
+    return _run_llm_endpoint("/ask-external", lambda: rag_engine.ask_external(
+        req.question, top_k=req.top_k), user.id)
 
 
 @app.get("/history")

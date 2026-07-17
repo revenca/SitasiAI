@@ -32,12 +32,12 @@ def main():
 
     # Hitung chunk per paper dari metadata.json
     chunk_count = {}
-    meta_file = ROOT / "metadata.json"
+    meta_file = Path(__file__).resolve().parent / "data" / "metadata.json"
     if meta_file.exists():
         for m in json.load(open(meta_file, encoding="utf-8")):
             chunk_count[m["paper_title"]] = chunk_count.get(m["paper_title"], 0) + 1
 
-    txt_dir = ROOT / "output_teks"
+    txt_dir = ROOT / "output_teks_clean"
     titles = [os.path.splitext(f)[0] for f in os.listdir(txt_dir)] if txt_dir.exists() else []
 
     db.query(models.Paper).delete()

@@ -1,8 +1,0 @@
-Topik,Jumlah_Paragraf,Precision@5,Recall@5,Hit@5,Faithfulness,Answer_Relevancy
-Computer Vision,76,0.5886,0.7724,0.8026,0.6021,0.8605
-Telecom/Radar,30,0.6833,1.0,1.0,0.5872,0.9368
-Software Eng/IT,22,0.5318,0.8182,0.9091,0.596,0.8706
-NLP,5,0.4,0.8,0.8,0.6933,0.9266
-ML/Forecasting,4,0.875,1.0,1.0,0.6042,0.9109
-Drone/UAV,4,0.5417,1.0,1.0,0.75,0.9484
-E-Nose/Sensor,3,0.3889,0.7778,1.0,0.6667,0.3018

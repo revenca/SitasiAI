@@ -16,3 +16,6 @@ datasets>=2.19.0
 
 # Ekstraksi PDF (opsional, untuk membuat output_teks/)
 pdfplumber>=0.11.0
+psycopg2-binary
+pgvector
+pytest

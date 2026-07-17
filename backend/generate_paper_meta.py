@@ -14,8 +14,8 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-TEKS_DIR = ROOT / "output_teks"
-OUT = ROOT / "paper_meta.json"
+TEKS_DIR = ROOT / "output_teks_clean"
+OUT = Path(__file__).resolve().parent / "data" / "paper_meta.json"
 
 MARKERS = [
     "Department", "Departemen", "Faculty", "Fakultas", "Institut", "Universit",
@@ -73,17 +73,24 @@ def parse_authors(text: str, title: str) -> list:
 
 
 def parse_year(text: str) -> str:
-    for pat in (
-        r"©\s*(20\d{2})\s*IEEE",
-        r"(20[12]\d)\s*IEEE",
-        r"/(\d{2})/\s*\$",          # ISBN footer: ...-5635-5/24/$31.00
-        r"©\s*(20\d{2})",
-        r"Copyright\D{0,8}(20\d{2})",
-    ):
+    # 1. Copyright footer IEEE (normal)
+    for pat in (r"©\s*(20[12]\d)\s*IEEE", r"(20[12]\d)\s*IEEE",
+                r"©\s*(20[12]\d)", r"Copyright\D{0,8}(20[12]\d)"):
         m = re.search(pat, text)
         if m:
-            g = m.group(1)
-            return g if len(g) == 4 else "20" + g
+            return m.group(1)
+    # 2. DOI IEEE: 10.1109/JOURNAL.YYYY.xxxxx  (paling andal utk IEEE Access/journal)
+    m = re.search(r"10\.1109/[A-Za-z]+\.(20[12]\d)\.", text)
+    if m:
+        return m.group(1)
+    # 3. Tahun TERBALIK dekat © (footer terotasi): "3202©" / "©3202" → 2023
+    m = re.search(r"([0-5]202)\s*©|©\s*([0-5]202)\b", text)
+    if m:
+        return (m.group(1) or m.group(2))[::-1]
+    # 4. ISBN footer: ...-5635-5/24/$31.00
+    m = re.search(r"/(\d{2})/\s*\$", text)
+    if m:
+        return "20" + m.group(1)
     return ""
 
 

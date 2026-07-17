@@ -1,0 +1,1 @@
+﻿$env:SLEEP_MS='40'; $env:BATCH='32'; $env:PYTHONUNBUFFERED='1'; & 'd:\TUGAS AKHIR\TA\.venv\Scripts\python.exe' -u 'd:\TUGAS AKHIR\TA\external_index\embed_shards.py'; & 'd:\TUGAS AKHIR\TA\.venv\Scripts\python.exe' -u 'd:\TUGAS AKHIR\TA\external_index\build_index.py'
