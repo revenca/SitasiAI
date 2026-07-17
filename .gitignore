@@ -77,3 +77,5 @@ external_index/vecs/
 external_index/*.bin
 external_index/*checkpoint*.json
 external_index/metadata_external.jsonl
+external_index/*.pid
+external_index/*.log
