@@ -485,6 +485,38 @@ button { cursor: pointer; font-family: inherit; }
   border-radius: var(--radius); box-shadow: var(--shadow-xs); width: 100%;
 }
 
+
+
+/* Peringatan query akronim/singkatan ambigu (mode Cari paper) */
+.query-note {
+  display: flex; gap: 8px; align-items: flex-start;
+  margin: 0 0 10px; padding: 9px 12px;
+  font-size: .82rem; line-height: 1.5; color: #7a5b12;
+  background: rgba(245, 176, 65, .12);
+  border: 1px solid rgba(245, 176, 65, .35);
+  border-radius: 10px;
+}
+.query-note-ic { flex: none; line-height: 1.4; }
+@media (prefers-color-scheme: dark) {
+  .query-note { color: #e8c98a; background: rgba(245,176,65,.10); border-color: rgba(245,176,65,.28); }
+}
+:root[data-theme="dark"] .query-note { color:#e8c98a; background:rgba(245,176,65,.10); border-color:rgba(245,176,65,.28); }
+
+/* Ringkasan referensi terpilih + referensi terkait (gaya AI-assistant) */
+.ref-summary { font-size: .85rem; line-height: 1.62; color: #3d5568; margin-top: 10px; }
+.related { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+.related-head {
+  font-size: .74rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 8px;
+}
+.related-item { padding: 9px 0; border-bottom: 1px dashed var(--border); }
+.related-item:last-child { border-bottom: none; }
+.related-title { font-size: .87rem; font-weight: 600; line-height: 1.45; }
+.related-title a { color: var(--blue-700); }
+.related-title a:hover { text-decoration: underline; }
+.related-cite { font-weight: 500; color: var(--muted); font-size: .8rem; }
+.related-sum { font-size: .82rem; line-height: 1.55; color: #52677a; margin-top: 4px; }
+
 /* ── Panel sumber dock kanan (ala Elicit) ──────────────── */
 :root { --panel-w: clamp(480px, 42vw, 820px); }
 .side-panel {

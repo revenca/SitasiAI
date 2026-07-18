@@ -1,16 +1,15 @@
-# docker-compose.yml — SitasiAI: backend API + PostgreSQL(pgvector).
-# Jalankan:  docker compose up -d
-# Migrasi vektor (sekali): docker compose exec api python -m backend.migrate_to_pgvector
-# Frontend dev tetap: cd frontend-react && npm run dev  (atau build & serve terpisah)
+# docker-compose.yml — SitasiAI: web (React+nginx) + API (FastAPI) + PostgreSQL(pgvector).
+# Jalankan:  docker compose up -d --build
+# Akses:     http://<IP-server>/           (nginx port 80 → SPA + proxy /api)
+# Migrasi vektor ke pgvector (OPSIONAL, utk skala): docker compose exec api python -m backend.migrate_to_pgvector
 services:
   db:
     image: pgvector/pgvector:pg16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: sitasi
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sitasi123}
       POSTGRES_DB: sitasiai
-    ports:
-      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -20,18 +19,25 @@ services:
 
   api:
     build: .
+    restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
     env_file: .env
     environment:
       DATABASE_URL: postgresql://sitasi:${POSTGRES_PASSWORD:-sitasi123}@db:5432/sitasiai
-    ports:
-      - "8000:8000"
     volumes:
-      - ./external_index:/app/external_index   # index FAISS + metadata (fallback/migrasi)
+      - ./external_index:/app/external_index   # index FAISS 163k + metadata (dipakai search)
       - ./backend/data:/app/backend/data       # index korpus 100 + metadata web
       - hf_models:/models                      # cache model SPECTER2 (~900 MB, sekali unduh)
+
+  web:
+    build: ./frontend-react
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"                                # user akses http://<IP-server>/
 
 volumes:
   pgdata:

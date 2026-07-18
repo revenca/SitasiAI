@@ -85,7 +85,7 @@ export default function Home() {
         // Cari paper: pencarian topik (basis data / Semantic Scholar live)
         setThinkMode("external");
         const { data } = await api.post("/ask-external", { question: q, top_k: topK });
-        setMessages((m) => [...m, { id: Date.now() + 1, role: "assistant", kind: "ask", query: q, answer: data.answer, candidates: data.candidates }]);
+        setMessages((m) => [...m, { id: Date.now() + 1, role: "assistant", kind: "ask", query: q, answer: data.answer, candidates: data.candidates, note: data.query_note }]);
         if (data.candidates?.length) setDrawer(data.candidates);   // panel kanan auto-buka
       } else if (isQuestion(q)) {
         setThinkMode("recommend");
@@ -102,12 +102,26 @@ export default function Home() {
         setThinkMode("recommend");
         const { data } = await api.post("/recommend", { paragraph: q, top_k: topK });
         setMessages((m) => [...m, { id: Date.now() + 1, role: "assistant", query: q, result: data }]);
+        const refs = refListFromResult(data);
+        if (refs.length) setDrawer(refs);   // panel kanan: referensi + terkait
       }
     } catch (e) {
       setMessages((m) => [...m, { id: Date.now() + 1, role: "assistant", error: e?.response?.data?.detail || "Terjadi kesalahan." }]);
     } finally {
       setLoading(false);
     }
+  };
+
+  // Rakit daftar referensi hasil rekomendasi utk panel kanan (terpilih dulu, lalu terkait)
+  const refListFromResult = (r) => {
+    if (!r || !r.best_reference_paper) return [];
+    const chosen = {
+      paper_title: r.best_reference_paper, authors: r.best_reference_authors,
+      year: r.best_reference_year, citation: r.best_reference_citation,
+      doi: r.best_reference_doi, summary: r.best_reference_summary,
+      source: r.source_mode === "eksternal" ? "Semantic Scholar (live)" : "Basis data",
+    };
+    return [chosen, ...(r.related || [])];
   };
 
   const newChat = () => { newChatCtx(); setDrawer(null); };
@@ -146,6 +160,12 @@ export default function Home() {
             ) : m.kind === "ask" ? (
               <div className="bubble bot">
                 <div className="bot-label"><IconSparkles size={15} /> Ringkasan</div>
+                {m.note && (
+                  <div className="query-note">
+                    <span className="query-note-ic">💡</span>
+                    <span>{m.note}</span>
+                  </div>
+                )}
                 <p className="answer-text"><MdLite text={m.answer} /></p>
                 {m.candidates?.length > 0 && (
                   <button className="papers-btn" onClick={() => setDrawer(m.candidates)}>
@@ -154,7 +174,7 @@ export default function Home() {
                 )}
               </div>
             ) : (
-              <BotBubble m={m} onPapers={() => setDrawer(m.result.candidates)} />
+              <BotBubble m={m} onRefs={() => { const refs = refListFromResult(m.result); if (refs.length) setDrawer(refs); }} />
             )}
           </motion.div>
         ))}
@@ -380,7 +400,7 @@ function CiteBubble({ cite, onRefs }) {
 }
 
 // ── Bubble jawaban asisten ──────────────────────────────────────────
-function BotBubble({ m, onPapers }) {
+function BotBubble({ m, onRefs }) {
   const r = m.result;
   if (!r.relevant || !r.best_reference_citation) {
     return <div className="bubble bot"><div className="alert">Tidak ditemukan referensi yang cukup relevan.</div></div>;
@@ -406,13 +426,17 @@ function BotBubble({ m, onPapers }) {
         <div className="ref-meta">
           <span><b>Author:</b> {r.best_reference_authors || "—"}</span>
           <span><b>Year:</b> {r.best_reference_year || "—"}</span>
-
         </div>
+        {r.best_reference_summary && (
+          <p className="ref-summary">{r.best_reference_summary}</p>
+        )}
       </div>
 
-      <button className="papers-btn" onClick={onPapers}>
-        <IconLibrary size={15} /> Kandidat yang dipertimbangkan ({r.candidates.length})
-      </button>
+      {r.related?.length > 0 && onRefs && (
+        <button className="papers-btn" onClick={onRefs}>
+          <IconLibrary size={15} /> Lihat referensi terkait ({r.related.length}) →
+        </button>
+      )}
     </div>
   );
 }

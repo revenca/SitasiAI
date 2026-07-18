@@ -51,6 +51,22 @@ REL_WIN  = float(os.getenv("REL_WIN", "0.08"))    # jendela relatif thd skor ter
 VERIFY_CITATION = os.getenv("VERIFY_CITATION", "1") == "1"
 VERIFY_STRICT   = os.getenv("VERIFY_STRICT", "1") == "1"   # 1=ketat, 0=sedang (lenient)
 
+# Gerbang relevansi untuk mode CARI/TANYA (eksplorasi, lebih longgar dari sitasi).
+# Tanpa ini, pencarian yang nyasar (mis. akronim ambigu) tetap "memaksa" 10 hasil.
+ASK_MIN_SIM = float(os.getenv("ASK_MIN_SIM", "0.50"))   # floor absolut; di bawah ini = sampah
+ASK_REL_WIN = float(os.getenv("ASK_REL_WIN", "0.18"))   # buang yang jauh di bawah hasil terbaik
+
+
+def _gate_ask(scored: list) -> list:
+    """Saring hasil cari/tanya (list of (score, item)). Simpan yang >= ASK_MIN_SIM DAN
+    dalam ASK_REL_WIN dari skor tertinggi. Kembalikan [] bila tak ada yang lolos
+    (→ jujur 'tidak ditemukan', bukan memaksa hasil nyasar)."""
+    if not scored:
+        return []
+    top = scored[0][0]
+    return [(s, p) for s, p in scored
+            if s >= ASK_MIN_SIM and s >= top - ASK_REL_WIN]
+
 
 def _gate_candidates(cands: list) -> list:
     """Saring kandidat: skor >= MIN_SIM dan tidak jauh di bawah kandidat terbaik."""
@@ -391,7 +407,14 @@ def answer_question(question: str, top_k: int = 5) -> dict:
         "clearly and concisely, in the SAME language as the question.\n"
         "- If the question relates to the papers/corpus, ground your answer in the context below "
         "and mention relevant paper titles.\n"
-        "- If it is a general question, answer from your own knowledge.\n"
+        "- If it is a general question, you may answer from your own knowledge — but only when you "
+        "are confident it is correct.\n"
+        "ANTI-FABRICATION (critical):\n"
+        "- NEVER invent or guess the expansion/definition of an acronym or technical term. If you are "
+        "not certain what an acronym stands for, say it is ambiguous and ask the user for the full term "
+        "(e.g. 'Singkatan ini ambigu — maksudnya apa? Coba tulis kepanjangannya'). Do NOT fabricate a "
+        "plausible-sounding expansion.\n"
+        "- Do not state specific facts, figures, or definitions you are unsure of.\n"
         "- Keep it brief (2-5 sentences) unless more detail is clearly needed.\n\n"
         f"Context from corpus:\n{context}\n\n"
         f"Question: {question}\n\nAnswer:"
@@ -479,6 +502,19 @@ def recommend(paragraph: str, top_k: int = 5, use_hyde: bool = True, use_cot: bo
     if allow_external and not gen.get("relevant", False):
         ext = recommend_external(paragraph, top_k=top_k, force_live=True)
         if ext.get("relevant") and ext.get("best_reference_paper"):
+            try:
+                cands = ext.get("candidates") or []
+                bt = ext.get("best_reference_paper", "")
+                rx = next((c for c in cands if c.get("paper_title") == bt),
+                          cands[0] if cands else None)
+                relx = [c for c in cands if c is not rx][:3]
+                _attach_summaries(paragraph[:600], ([rx] if rx else []) + relx)
+                ext["best_reference_summary"] = (rx or {}).get("summary", "")
+                ext["related"] = [{k: c.get(k, "") for k in
+                                   ("paper_title", "authors", "year", "citation", "doi", "summary")}
+                                  for c in relx]
+            except Exception:
+                pass
             ext["source_mode"] = "eksternal"
             ext["fallback_note"] = ("Tidak ditemukan di korpus lokal (100 paper) — "
                                     "sitasi diambil dari sumber eksternal.")
@@ -499,6 +535,13 @@ def recommend(paragraph: str, top_k: int = 5, use_hyde: bool = True, use_cot: bo
     cited_paragraph = cite_rewrite(paragraph, apa_key) if (gen.get("relevant") and apa_key) else ""
     picked_live = bool(ref and "live" in str(ref.get("source", "")).lower())
 
+    # Gaya AI-assistant (ala Elicit): ringkasan utk referensi terpilih + 3 terkait
+    related = [c for c in candidates if c is not ref][:3]
+    try:
+        _attach_summaries(paragraph[:600], ([ref] if ref else []) + related)
+    except Exception:
+        pass
+
     return {
         "citation_text":           gen.get("citation_text", ""),
         "best_reference_paper":    ref["paper_title"] if ref else best_title,
@@ -511,6 +554,10 @@ def recommend(paragraph: str, top_k: int = 5, use_hyde: bool = True, use_cot: bo
         "relevant":                gen.get("relevant", False),
         "reasoning":               gen.get("reasoning", ""),
         "candidates":              candidates,
+        "best_reference_summary":  ref.get("summary", "") if ref else "",
+        "related": [{k: c.get(k, "") for k in
+                     ("paper_title", "authors", "year", "citation", "doi", "summary")}
+                    for c in related],
         "source_mode":             "eksternal" if picked_live else "lokal",
     }
 
@@ -591,15 +638,34 @@ def _search_keywords(paragraph: str) -> str:
     """Ringkas paragraf jadi kueri keyword pendek untuk API pencarian eksternal.
     One-shot: contoh menunjukkan agar memakai istilah teknis SPESIFIK (nama framework/
     metode/alat), bukan kata umum — kata generik menyeret hasil ke domain lain."""
+    # Query PENDEK (mis. akronim/istilah tunggal): jangan diekstraksi-ulang — cukup
+    # terjemahkan + buang filler. Cegah LLM "mengarang" konteks domain yang menyeret hasil
+    # nyasar (mis. "HyDE" → "HyDE ontology development framework").
+    if len(paragraph.split()) <= 6:
+        out = _call_llm(
+            "Turn the short text below into a plain English search query.\n"
+            "- Translate to English if it is not English.\n"
+            "- Remove request/filler words (e.g. 'apa itu', 'carikan paper tentang', 'find papers about').\n"
+            "- Do NOT add, expand, or invent ANY new terms, domains, related concepts, or acronym "
+            "expansions. Keep acronyms EXACTLY as written.\n"
+            "Output ONLY the resulting query words, nothing else.\n\n"
+            f"Text: {paragraph}",
+            temperature=0, prefer="openrouter")   # gpt-4o-mini: patuh 'jangan ekspansi' (llama tidak)
+        return (out or paragraph).strip().strip('"') or paragraph.strip()
     out = _call_llm(
-        "Extract a concise academic search query (5-10 keywords, no quotes, no boolean "
+        "Extract a concise academic search query (up to 10 keywords, no quotes, no boolean "
         "operators) for finding papers on the SPECIFIC technical topic of a paragraph. "
-        "Prefer named methods, frameworks, standards, tools, and domain-specific terms over "
-        "generic words.\n"
+        "Prefer named methods, frameworks, standards, tools, and domain-specific terms that are "
+        "ACTUALLY PRESENT in the input over generic words.\n"
         "Rules:\n"
         "- Output the query in ENGLISH (translate non-English text).\n"
         "- Preserve acronyms and technical terms EXACTLY as written — do NOT alter, expand, "
         "or 'correct' them (e.g., IOTN stays IOTN, not IoT).\n"
+        "- Do NOT invent or add topics, domains, or descriptive terms that are not in the input. "
+        "Use ONLY concepts the input actually mentions.\n"
+        "- If the input is very short (a single term or acronym with no surrounding context), "
+        "output ONLY that term — do NOT pad it with a guessed domain (e.g. input 'HyDE' → query 'HyDE', "
+        "NOT 'HyDE ontology development framework').\n"
         "- Drop filler/request words (e.g., 'find papers about', 'carikan paper tentang').\n"
         "Output ONLY the query string.\n\n"
         "Example:\n"
@@ -693,50 +759,100 @@ def _external_citation(p: dict) -> tuple:
     return disp, year, f"{surname} et al., {year}" if len(al) > 1 else f"{surname}, {year}"
 
 
+_ACRONYM_FILLER = {"apa", "itu", "apakah", "yang", "tentang", "paper", "papers", "cari",
+                   "carikan", "cariin", "temukan", "find", "search", "about", "what", "is",
+                   "are", "the", "a", "an", "dan", "atau", "makalah", "jurnal", "of", "for", "on"}
+
+
+def _acronym_hint(query: str):
+    """Deteksi ringan (tanpa LLM): bila query PENDEK dan mengandung token mirip singkatan
+    (mis. 'HyDE', 'RAG', 'MBG', 'IOTN') → kembalikan token itu untuk peringatan UI.
+    Singkatan ambigu sering menyesatkan embedding → sarankan user tulis kepanjangannya."""
+    words = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9\-]*", query or "")
+             if w.lower() not in _ACRONYM_FILLER]
+    if not words or len(words) > 2:            # cuma untuk query pendek
+        return None
+    for w in words:
+        caps = sum(1 for ch in w if ch.isupper())
+        if 2 <= len(w) <= 8 and (caps >= 2 or (w.isupper() and len(w) >= 2)):
+            return w
+    return None
+
+
 def ask_external(question: str, top_k: int = 5) -> dict:
-    """Pertanyaan / topik pendek ("paper tentang X?") → cari paper eksternal + jawaban singkat.
-    Tanpa HyDE/CoT sitasi (input bukan draf klaim): keyword → fetch → re-rank SPECTER2 → ringkas."""
+    """Pertanyaan / topik pendek ("paper tentang X?") → cari paper + jawaban singkat.
+    HYBRID: korpus lokal 163k (vektor SPECTER2) + live Semantic Scholar/OpenAlex,
+    digabung → dedup → rerank cosine → gate relevansi → ringkas (ala Elicit).
+    Query di-embed dengan HyDE (query-expansion) — recall paper 'nama teknik' setara mode
+    sitasi & mengurangi bias korpus (abstrak hipotetis lebih topikal)."""
     init()
-    if not EXT_PREFER_LIVE and _init_external_index():
-        # (hanya bila tak ada S2 key) pencarian vektor di index offline
-        candidates = _search_external_index(embed(question), top_k=top_k)
-        keywords = "(pencarian vektor SPECTER2 di index eksternal)"
-    else:
-        # SUMBER EKSTERNAL = Semantic Scholar live (keyword → fetch → re-rank SPECTER2)
-        keywords = _search_keywords(question)
-        papers = fetch_external(keywords, limit=20, alt_query=question)
-        if not papers:
-            return {"answer": "Sumber eksternal tidak dapat dijangkau (rate limit / jaringan). Coba lagi.",
-                    "candidates": [], "search_query": keywords}
-        qv = embed(question)
+    ac = _acronym_hint(question)
+    note = (f"“{ac}” terdeteksi sebagai singkatan/istilah teknis. Jika hasil kurang tepat, "
+            "coba tulis kepanjangannya atau tambah konteks (mis. bidang/metodenya).") if ac else None
+    qv = hyde_embed(question)                    # opsi B: HyDE juga di mode cari
+    pool = []
+
+    # (1) Korpus lokal 163k — vektor SPECTER2 murni (cepat, offline)
+    if _init_external_index():
+        pool += _search_external_index(qv, top_k=max(top_k * 2, 12),
+                                       source_label="Basis data (163k)")
+
+    # (2) Live Semantic Scholar / OpenAlex — keyword → fetch → embed → skor cosine
+    keywords = _search_keywords(question)
+    papers = fetch_external(keywords, limit=20, alt_query=question)
+    if papers:
         pvecs = embed_many([f"{p['title']} {p['abstract']}"[:2000] for p in papers])  # batch
-        scored = sorted(zip((float(np.dot(qv, v)) for v in pvecs), papers),
-                        key=lambda x: -x[0])
-        candidates = []
-        for s, p in scored[:top_k]:
+        for p, v in zip(papers, pvecs):
             authors, year, apa = _external_citation(p)
-            candidates.append({"paper_title": p["title"], "authors": authors, "year": year,
-                               "citation": apa, "chunk_text": p["abstract"], "score": s,
-                               "doi": p["doi"], "cited_by": p["cited_by"], "source": p["source"]})
+            pool.append({"paper_title": p["title"], "authors": authors, "year": year,
+                         "citation": apa, "chunk_text": p["abstract"],
+                         "score": float(np.dot(qv, v)), "doi": p["doi"],
+                         "cited_by": p["cited_by"], "source": p["source"]})
+
+    if not pool:
+        return {"answer": "Sumber tidak dapat dijangkau (korpus lokal & live keduanya kosong). Coba lagi.",
+                "candidates": [], "search_query": keywords, "query_note": note}
+
+    # Dedup by judul (simpan skor tertinggi), rerank, lalu gate relevansi
+    best = {}
+    for c in pool:
+        k = (c.get("paper_title") or "").strip().lower()
+        if k and (k not in best or c["score"] > best[k]["score"]):
+            best[k] = c
+    scored = _gate_ask(sorted(((c["score"], c) for c in best.values()), key=lambda x: -x[0]))
+    if not scored:
+        return {"answer": "Tidak ditemukan paper yang cukup relevan dengan pencarian ini. "
+                          "Coba istilah yang lebih lengkap/spesifik (mis. kepanjangan dari singkatan).",
+                "candidates": [], "search_query": keywords, "query_note": note}
+    candidates = [c for _, c in scored[:top_k]]
+
     _attach_summaries(question, candidates)                  # kolom "Summary" ala Elicit
     listing = "\n".join(f"- [{c['year']}] {c['paper_title']} ({c['citation']}): {c['chunk_text'][:400]}"
                         for c in candidates)
     ans = _call_llm(
-        "You are a research assistant. The papers below were retrieved and RANKED BY SEMANTIC "
-        "RELEVANCE to the user's question via an external academic search. Write a short "
-        "synthesis (2-4 sentences) of what the literature collectively says about the question, "
-        "referring to the most relevant papers by author. "
-        "Answer in the SAME language as the question (Indonesian → Indonesian).\n\n"
-        f"Papers:\n{listing}\n\nQuestion: {question}\n\nAnswer:", temperature=0.4)
+        "You are a research assistant. The papers below were retrieved from an academic corpus "
+        "and live search, ranked by semantic relevance. Write a short synthesis (2-4 sentences) of what "
+        "these papers collectively say, referring to the most relevant ones by author.\n"
+        "STRICT GROUNDING RULES:\n"
+        "- Base your answer ONLY on the papers listed below. Do NOT add facts from your own knowledge.\n"
+        "- NEVER invent or guess the meaning/expansion of an acronym or term. If the papers do not "
+        "define it, do not define it either.\n"
+        "- If the retrieved papers do NOT actually address the question, say so plainly (e.g. "
+        "'Paper yang ditemukan tidak secara spesifik membahas topik ini') instead of forcing an answer.\n"
+        "- Answer in the SAME language as the question (Indonesian → Indonesian).\n\n"
+        f"Papers:\n{listing}\n\nQuestion: {question}\n\nAnswer:", temperature=0.3)
     return {"answer": ans or "Tidak ada jawaban.", "candidates": candidates,
-            "search_query": keywords}
+            "search_query": keywords, "query_note": note}
 
 
 def _summarize_source(question: str, c: dict) -> str:
     """Ringkasan 1-2 kalimat: apa isi paper INI yang relevan dengan pertanyaan (gaya Elicit)."""
     out = _call_llm(
         "Ringkas dalam 1-2 kalimat: apa kontribusi/temuan paper INI, dikaitkan dengan "
-        "pertanyaan pengguna. Spesifik dan faktual (berdasarkan abstrak).\n"
+        "pertanyaan pengguna. HANYA berdasarkan abstrak di bawah — jangan menambah fakta dari "
+        "pengetahuanmu sendiri, dan jangan mengarang kepanjangan akronim. Bila abstrak ini "
+        "sebenarnya tidak membahas topik pertanyaan, katakan apa adanya (mis. 'Paper ini membahas "
+        "X, tidak spesifik ke topik yang ditanya').\n"
         "WAJIB tulis ringkasan dalam BAHASA INDONESIA (istilah teknis seperti nama metode/"
         "model boleh tetap bahasa Inggris). Output HANYA kalimat ringkasannya, tanpa pembuka.\n\n"
         f"Pertanyaan: {question}\n"
