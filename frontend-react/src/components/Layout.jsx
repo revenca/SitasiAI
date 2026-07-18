@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { useChat } from "../chat.jsx";
 import BookLogo from "./BookLogo.jsx";
-import { IconSearch, IconFile, IconHelp, IconPlus, IconEdit, IconTrash, IconChatBubble } from "./Icons.jsx";
+import { IconSearch, IconFile, IconHelp, IconPlus, IconEdit, IconTrash, IconChatBubble, IconMenu, IconClose } from "./Icons.jsx";
 
 const EASE = [0.22, 0.61, 0.36, 1];
 
@@ -13,14 +13,15 @@ export default function Layout({ children }) {
   const nav = useNavigate();
   const [editingId, setEditingId] = useState(null);
   const [editText, setEditText] = useState("");
+  const [navOpen, setNavOpen] = useState(false);   // sidebar drawer (mobile)
 
-  const goChat = (id) => { openChat(id); if (loc.pathname !== "/") nav("/"); };
+  const goChat = (id) => { openChat(id); if (loc.pathname !== "/") nav("/"); setNavOpen(false); };
   const startRename = (e, s) => { e.stopPropagation(); setEditingId(s.id); setEditText(s.title); };
   const commitRename = () => { if (editingId) renameChat(editingId, editText); setEditingId(null); };
 
   const NavItem = ({ to, icon, label }) => (
     <motion.div whileTap={{ scale: 0.97 }}>
-      <Link to={to} className={`nav-item ${loc.pathname === to ? "active" : ""}`}>
+      <Link to={to} className={`nav-item ${loc.pathname === to ? "active" : ""}`} onClick={() => setNavOpen(false)}>
         <span className="nav-icon">{icon}</span> {label}
       </Link>
     </motion.div>
@@ -30,7 +31,11 @@ export default function Layout({ children }) {
   return (
     <div className="app-shell">
       {/* Sidebar */}
-      <aside className="sidebar">
+      {navOpen && <div className="nav-scrim" onClick={() => setNavOpen(false)} />}
+      <aside className={`sidebar${navOpen ? " open" : ""}`}>
+        <button className="nav-close" onClick={() => setNavOpen(false)} aria-label="Tutup menu">
+          <IconClose size={18} />
+        </button>
         <Link to="/" className="brand"><BookLogo size={24} color="#fff" /> <span><b>Sitasi</b>AI</span></Link>
 
         <div className="nav-section">WORKFLOWS</div>
@@ -76,7 +81,9 @@ export default function Layout({ children }) {
       {/* Main */}
       <main className="main">
         <div className="topbar">
-          <div />
+          <button className="burger" onClick={() => setNavOpen(true)} aria-label="Buka menu">
+            <IconMenu size={20} />
+          </button>
           <div className="topbar-right">
             <span className="help"><IconHelp size={16} /> Help</span>
           </div>

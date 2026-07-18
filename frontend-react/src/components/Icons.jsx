@@ -102,3 +102,7 @@ export const IconTrash = (p) => (
 export const IconChatBubble = (p) => (
   <Svg {...p}><path d="M21 11.5a8.5 8.5 0 0 1-12.5 7.5L3 21l2-5.5A8.5 8.5 0 1 1 21 11.5Z" /></Svg>
 );
+
+export const IconMenu = (p) => (
+  <Svg {...p}><path d="M4 6h16M4 12h16M4 18h16" /></Svg>
+);

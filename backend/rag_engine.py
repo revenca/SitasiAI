@@ -81,7 +81,7 @@ def _verify_support(claim: str, ref: dict) -> bool:
         f"Reference title: {ref.get('paper_title','')}\n"
         f"Reference abstract: {(ref.get('chunk_text') or '')[:900]}\n\n"
         "Answer with exactly one word: YES or NO.",
-        temperature=0)
+        temperature=0, prefer="openrouter")
     return out.strip().upper().startswith("Y")
 
 
@@ -166,10 +166,14 @@ def _build_llm_chain():
     print("[LLM chain]", " -> ".join(f"{n}({m})" for n, _, m in chain))
 
 
-def _call_llm(prompt: str, temperature: float = 0.3) -> str:
+def _call_llm(prompt: str, temperature: float = 0.3, prefer: str = None) -> str:
     """Coba tiap provider dalam rantai (2 percobaan per provider).
-    Limit/error → jatuh ke provider berikutnya. Return "" bila semua gagal."""
-    for name, client, model in (_llm_chain or [("openrouter", _client, GEN_MODEL)]):
+    prefer = nama provider yang diutamakan untuk tugas ini (mis. 'groq' utk HyDE,
+    'openrouter' utk CoT); sisanya tetap jadi fallback. Return "" bila semua gagal."""
+    chain = _llm_chain or [("openrouter", _client, GEN_MODEL)]
+    if prefer:
+        chain = sorted(chain, key=lambda x: 0 if x[0] == prefer else 1)   # utamakan 'prefer'
+    for name, client, model in chain:
         for attempt in range(2):
             try:
                 r = client.chat.completions.create(
@@ -188,14 +192,29 @@ def _call_llm(prompt: str, temperature: float = 0.3) -> str:
     return ""
 
 
+EMBED_BATCH = int(os.getenv("EMBED_BATCH", "32"))   # ukuran sub-batch GPU
+
+
+def embed_many(texts: list) -> np.ndarray:
+    """Embed banyak teks dalam SATU forward pass (batched) → kunci lebih jarang dipegang,
+    GPU lebih efisien. Return array (N, 768) L2-normalized."""
+    if not texts:
+        return np.zeros((0, 768), dtype=np.float32)
+    out = []
+    with _embed_lock:                 # satu kali kunci untuk seluruh batch
+        for i in range(0, len(texts), EMBED_BATCH):
+            chunk = texts[i:i + EMBED_BATCH]
+            x = _tokenizer(chunk, return_tensors="pt", truncation=True, max_length=512, padding=True)
+            x = {k: v.to(_device) for k, v in x.items()}
+            with torch.no_grad():
+                o = _model(**x)
+            e = torch.nn.functional.normalize(o.last_hidden_state[:, 0, :], dim=1)
+            out.append(e.cpu().numpy().astype(np.float32))
+    return np.vstack(out)
+
+
 def embed(text: str):
-    with _embed_lock:                 # aman dipanggil dari beberapa thread
-        x = _tokenizer(text, return_tensors="pt", truncation=True, max_length=512, padding=True)
-        x = {k: v.to(_device) for k, v in x.items()}
-        with torch.no_grad():
-            o = _model(**x)
-        e = torch.nn.functional.normalize(o.last_hidden_state[:, 0, :], dim=1)
-        return e.squeeze().cpu().numpy()
+    return embed_many([text])[0]      # jalur tunggal lewat batch (1 baris)
 
 
 def hyde_generate(paragraph: str) -> str:
@@ -224,7 +243,7 @@ def hyde_generate(paragraph: str) -> str:
         "that contradict or drift away from the paragraph's actual topic.\n\n"
         f"Draft Paragraph:\n{paragraph}"
     )
-    return _call_llm(prompt, temperature=HYDE_TEMP)
+    return _call_llm(prompt, temperature=HYDE_TEMP, prefer="groq")  # HyDE cepat/gratis
 
 
 def hyde_embed(paragraph: str):
@@ -239,10 +258,11 @@ def hyde_embed(paragraph: str):
             hyps = [h for h in ex.map(lambda _: hyde_generate(paragraph), range(HYDE_N)) if h]
     else:
         hyps = [h for h in (hyde_generate(paragraph) for _ in range(HYDE_N)) if h]
-    vecs = [embed(h) for h in hyps]           # embed tiap abstrak (torch, sekuensial)
-    if HYDE_INCLUDE_QUERY or not vecs:        # sertakan paragraf asli (hybrid) / fallback
-        vecs.append(embed(paragraph))
-    qv = np.mean(np.vstack(vecs), axis=0)
+    texts = list(hyps)
+    if HYDE_INCLUDE_QUERY or not texts:       # sertakan paragraf asli (hybrid) / fallback
+        texts.append(paragraph)
+    vecs = embed_many(texts)                  # SATU forward pass batched utk semua abstrak
+    qv = np.mean(vecs, axis=0)
     return (qv / (np.linalg.norm(qv) + 1e-12)).astype(np.float32)
 
 
@@ -276,15 +296,20 @@ def _extract_json(raw: str):
     raw = re.sub(r"^```(?:json)?\s*", "", (raw or "").strip())
     raw = re.sub(r"\s*```$", "", raw)
     try:
-        return json.loads(raw)
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, list):              # Llama kadang membungkus dlm list
+            return next((x for x in parsed if isinstance(x, dict)), None)
     except json.JSONDecodeError:
         pass
     m = re.search(r"\{.*\}", raw, re.S)          # blok {...} terluas di tengah narasi
     if m:
         try:
-            return json.loads(m.group())
+            parsed = json.loads(m.group())
         except json.JSONDecodeError:
             return None
+        return parsed if isinstance(parsed, dict) else None
     return None
 
 def cot_generate(paragraph: str, chunks: list) -> dict:
@@ -319,7 +344,7 @@ def cot_generate(paragraph: str, chunks: list) -> dict:
         '{ "relevant": true, "best_reference_paper": "title", '
         '"best_reference_chunk": "chunk", "citation_text": "sentence or null", "reasoning": "brief" }'
     )
-    raw = _call_llm(prompt, temperature=COT_TEMP)
+    raw = _call_llm(prompt, temperature=COT_TEMP, prefer="openrouter")  # CoT akurat
     r = _extract_json(raw)
     if r is None:
         return {"relevant": False, "citation_text": "", "best_reference_paper": "", "reasoning": ""}
@@ -342,7 +367,7 @@ def simple_generate(paragraph: str, chunks: list) -> dict:
         'Output JSON: { "relevant": true, "best_reference_paper": "title", '
         '"best_reference_chunk": "chunk", "citation_text": "sentence or null", "reasoning": "brief" }'
     )
-    raw = _call_llm(prompt, temperature=0.2)
+    raw = _call_llm(prompt, temperature=0.2, prefer="openrouter")
     r = _extract_json(raw)
     if r is None:
         return {"relevant": False, "citation_text": "", "best_reference_paper": "", "reasoning": ""}
@@ -423,18 +448,19 @@ def recommend(paragraph: str, top_k: int = 5, use_hyde: bool = True, use_cot: bo
         finally:
             _hx.shutdown(wait=False)
         seen = {c["paper_title"].strip().lower() for c in candidates}
+        fresh = [p for p in papers if (p.get("title") or "").strip().lower() not in seen]
+        fvecs = embed_many([f"{p['title']} {p['abstract']}"[:2000] for p in fresh])  # batch
         live = []
-        for p in papers:
-            if (p.get("title") or "").strip().lower() in seen:
-                continue                                     # dedupe vs basis data
-            v = embed(f"{p['title']} {p['abstract']}"[:2000])
+        for p, v in zip(fresh, fvecs):
             a, y, apa = _external_citation(p)
             live.append({"paper_title": p["title"], "authors": a, "year": y, "citation": apa,
                          "chunk_text": p["abstract"], "score": float(np.dot(emb, v)),
                          "doi": p.get("doi", ""), "cited_by": p.get("cited_by", 0),
                          "source": "Semantic Scholar (live)"})
         live.sort(key=lambda c: -c["score"])
-        candidates = candidates + live[:3]                   # perkaya konteks: maks 3 live terbaik
+        # Live BERSAING dgn basis data dalam kuota yang sama: gabung, urutkan skor,
+        # ambil top_k TOTAL (maks 10) — bukan 10+3.
+        candidates = sorted(candidates + live[:5], key=lambda c: -c.get("score", 0))[:top_k]
 
     candidates = _gate_candidates(candidates)                # Lapis 1: buang kandidat lemah
     gen = (cot_generate(paragraph, candidates) if use_cot
@@ -683,25 +709,51 @@ def ask_external(question: str, top_k: int = 5) -> dict:
             return {"answer": "Sumber eksternal tidak dapat dijangkau (rate limit / jaringan). Coba lagi.",
                     "candidates": [], "search_query": keywords}
         qv = embed(question)
-        scored = sorted(((float(np.dot(qv, embed(f"{p['title']} {p['abstract']}"[:2000]))), p)
-                         for p in papers), key=lambda x: -x[0])
+        pvecs = embed_many([f"{p['title']} {p['abstract']}"[:2000] for p in papers])  # batch
+        scored = sorted(zip((float(np.dot(qv, v)) for v in pvecs), papers),
+                        key=lambda x: -x[0])
         candidates = []
         for s, p in scored[:top_k]:
             authors, year, apa = _external_citation(p)
             candidates.append({"paper_title": p["title"], "authors": authors, "year": year,
                                "citation": apa, "chunk_text": p["abstract"], "score": s,
                                "doi": p["doi"], "cited_by": p["cited_by"], "source": p["source"]})
+    _attach_summaries(question, candidates)                  # kolom "Summary" ala Elicit
     listing = "\n".join(f"- [{c['year']}] {c['paper_title']} ({c['citation']}): {c['chunk_text'][:400]}"
                         for c in candidates)
     ans = _call_llm(
         "You are a research assistant. The papers below were retrieved and RANKED BY SEMANTIC "
-        "RELEVANCE to the user's question via an external academic search. Briefly present the "
-        "papers that relate to the question — for each, one sentence on what it covers. "
-        "Answer in the SAME language as the question (Indonesian → Indonesian). "
-        "Only dismiss a paper if it is clearly about an unrelated topic.\n\n"
+        "RELEVANCE to the user's question via an external academic search. Write a short "
+        "synthesis (2-4 sentences) of what the literature collectively says about the question, "
+        "referring to the most relevant papers by author. "
+        "Answer in the SAME language as the question (Indonesian → Indonesian).\n\n"
         f"Papers:\n{listing}\n\nQuestion: {question}\n\nAnswer:", temperature=0.4)
     return {"answer": ans or "Tidak ada jawaban.", "candidates": candidates,
             "search_query": keywords}
+
+
+def _summarize_source(question: str, c: dict) -> str:
+    """Ringkasan 1-2 kalimat: apa isi paper INI yang relevan dengan pertanyaan (gaya Elicit)."""
+    out = _call_llm(
+        "Ringkas dalam 1-2 kalimat: apa kontribusi/temuan paper INI, dikaitkan dengan "
+        "pertanyaan pengguna. Spesifik dan faktual (berdasarkan abstrak).\n"
+        "WAJIB tulis ringkasan dalam BAHASA INDONESIA (istilah teknis seperti nama metode/"
+        "model boleh tetap bahasa Inggris). Output HANYA kalimat ringkasannya, tanpa pembuka.\n\n"
+        f"Pertanyaan: {question}\n"
+        f"Paper: {c.get('paper_title','')}\n"
+        f"Abstrak: {(c.get('chunk_text') or '')[:1200]}",
+        temperature=0.3, prefer="groq")            # Groq: gratis & cepat utk ringkasan massal
+    return (out or "").strip()
+
+
+def _attach_summaries(question: str, candidates: list):
+    """Isi field 'summary' tiap kandidat secara PARALEL (Groq)."""
+    if not candidates:
+        return
+    with ThreadPoolExecutor(max_workers=min(len(candidates), 6)) as ex:
+        sums = list(ex.map(lambda c: _summarize_source(question, c), candidates))
+    for c, s in zip(candidates, sums):
+        c["summary"] = s or (c.get("chunk_text", "")[:200])   # fallback: cuplikan abstrak
 
 
 def recommend_external(paragraph: str, top_k: int = 5, force_live: bool = False) -> dict:
@@ -731,8 +783,8 @@ def recommend_external(paragraph: str, top_k: int = 5, force_live: bool = False)
                     "best_reference_citation": "", "cited_paragraph": "", "relevant": False,
                     "reasoning": "Sumber eksternal tidak dapat dijangkau (rate limit / jaringan).",
                     "candidates": [], "search_query": keywords}
-        scored = sorted(((float(np.dot(q, embed(f"{p['title']} {p['abstract']}"[:2000]))), p)
-                         for p in papers), key=lambda x: -x[0])
+        pvecs = embed_many([f"{p['title']} {p['abstract']}"[:2000] for p in papers])  # batch
+        scored = sorted(zip((float(np.dot(q, v)) for v in pvecs), papers), key=lambda x: -x[0])
         candidates = []
         for s, p in scored[:top_k]:
             authors, year, apa = _external_citation(p)
@@ -799,8 +851,8 @@ def _find_external_ref(sentence: str, top_k: int = 5):
     if not papers:
         return None
     qv = embed(sentence)
-    scored = sorted(((float(np.dot(qv, embed(f"{p['title']} {p['abstract']}"[:2000]))), p)
-                     for p in papers), key=lambda x: -x[0])
+    pvecs = embed_many([f"{p['title']} {p['abstract']}"[:2000] for p in papers])  # batch
+    scored = sorted(zip((float(np.dot(qv, v)) for v in pvecs), papers), key=lambda x: -x[0])
     cand = []
     for s, p in scored[:top_k]:
         a, y, apa = _external_citation(p)
@@ -843,7 +895,16 @@ def _rewrite_with_reference(sentence: str, ref: dict) -> str:
 
 def _cite_one_sentence(sent: str, top_k: int, allow_external: bool, prefer_external: bool):
     """Proses 1 kalimat (dipanggil paralel): cari referensi → rewrite dgn sitasi.
-    Return (kalimat_hasil, ref|None, source)."""
+    Return (kalimat_hasil, ref|None, source). Error apa pun → kalimat dibiarkan tanpa
+    sitasi (graceful), TIDAK menjatuhkan seluruh request."""
+    try:
+        return _cite_one_sentence_inner(sent, top_k, allow_external, prefer_external)
+    except Exception as e:
+        print(f"[cite_abstract] kalimat gagal ({type(e).__name__}: {e}) — dilewati tanpa sitasi")
+        return sent, None, "lokal"
+
+
+def _cite_one_sentence_inner(sent: str, top_k: int, allow_external: bool, prefer_external: bool):
     ref, source = None, "lokal"
     if prefer_external:                                       # 🌐 ON → eksternal langsung
         ref = _find_external_ref(sent, top_k)
@@ -883,6 +944,9 @@ def cite_abstract(paragraph: str, top_k: int = 5, allow_external: bool = True,
             refs.append({"n": len(refs) + 1, "citation": ref["citation"],
                          "paper_title": ref["paper_title"], "authors": ref.get("authors", ""),
                          "year": ref.get("year", ""), "doi": ref.get("doi", ""),
+                         "cited_by": ref.get("cited_by", 0), "score": ref.get("score"),
+                         "chunk_text": (ref.get("chunk_text") or "")[:1200],
                          "source": source})
+    _attach_summaries(paragraph[:800], refs)                  # ringkasan AI per referensi (panel)
     return {"cited_abstract": " ".join(out_sents), "references": refs,
             "n_sentences": len(out_sents), "n_cited": len(refs)}
