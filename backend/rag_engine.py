@@ -54,6 +54,94 @@ VERIFY_STRICT   = os.getenv("VERIFY_STRICT", "1") == "1"   # 1=ketat, 0=sedang (
 CITE_MAX_PER_PAPER  = int(os.getenv("CITE_MAX_PER_PAPER", "2"))     # 1 paper max N sitasi/dokumen
 CITE_STRICT_VERIFY  = os.getenv("CITE_STRICT_VERIFY", "1") == "1"   # verify ketat khusus abstrak
 CITE_SKIP_NONCLAIM  = os.getenv("CITE_SKIP_NONCLAIM", "1") == "1"   # skip kalimat tanpa klaim
+# Penyisipan sitasi: default DETERMINISTIK (sisip penanda apa adanya → bersih, tanpa klausa
+# jembatan retoris, hemat 1 panggilan LLM/kalimat). CITE_POLISH=1 → poles kalimat via LLM.
+CITE_POLISH         = os.getenv("CITE_POLISH", "0") == "1"
+
+# Penjaga SUMBER EKSTERNAL (anti "pintu belakang maksa"): S2 punya jutaan paper → utk klaim
+# apapun (bahkan ngawur) hampir selalu ada yang nyerempet kata. Maka eksternal butuh floor
+# absolut LEBIH TINGGI + verify KETAT (bukan lenient) sebelum boleh jadi sitasi.
+EXT_MIN_SIM       = float(os.getenv("EXT_MIN_SIM", "0.72"))       # floor cosine absolut eksternal
+EXT_VERIFY_STRICT = os.getenv("EXT_VERIFY_STRICT", "1") == "1"    # verify ketat utk sitasi eksternal
+# Rekomendasi 1-sitasi (klaim tunggal, sering ngawur/berdiri sendiri): verify SELALU ketat +
+# anti-substitusi. Klaim tunggal tak punya konteks kalimat lain utk kalibrasi → butuh gerbang
+# independen yang tak bergantung prompt CoT.
+REC_VERIFY_STRICT = os.getenv("REC_VERIFY_STRICT", "1") == "1"
+
+# Preferensi KEBARUAN (tier): paper dikelompokkan per "band" relevansi (lebar RECENCY_BAND).
+# Di dalam band yang sama → paper TERBARU diutamakan. Beda band → yang lebih relevan tetap
+# menang. Jadi relevansi tetap dominan, kebaruan hanya menentukan urutan antar-paper setara.
+RECENCY_BAND = float(os.getenv("RECENCY_BAND", "0.05"))   # lebar band cosine (0 = matikan preferensi)
+
+
+def _year_int(c: dict) -> int:
+    try:
+        return int(str(c.get("year") or "")[:4])
+    except Exception:
+        return 0
+
+
+def _rank_key(c: dict):
+    """Kunci urut (dipakai dgn reverse=True): (tier_relevansi, tahun, cosine).
+    Paper dgn relevansi SETARA (band cosine sama) → yang lebih BARU di atas."""
+    score = c.get("score", 0.0)
+    tier = round(score / RECENCY_BAND) if RECENCY_BAND > 0 else score
+    return (tier, _year_int(c), score)
+
+
+# Porsi hasil dari sumber EKSTERNAL (S2 live) — S2 punya jauh lebih banyak kebaruan/cakupan.
+# Target, bukan paksaan: bila eksternal kurang, sisa ditutup korpus lokal (graceful).
+EXT_QUOTA = float(os.getenv("EXT_QUOTA", "0.70"))
+
+# Filter relevansi PER-PAPER di mode cari: buang paper yang cuma setopik luas / nyerempet,
+# tidak SPESIFIK menjawab maksud query. 1 panggilan batch (menilai semua kandidat sekaligus).
+RELEVANCE_FILTER = os.getenv("RELEVANCE_FILTER", "1") == "1"
+
+
+def _filter_relevant(question: str, candidates: list) -> list:
+    """Sisakan hanya paper yang SPESIFIK menjawab query (bukan sekadar setopik luas).
+    Satu panggilan batch; fail-open bila parsing gagal (tak membuang apa pun)."""
+    if not candidates or not RELEVANCE_FILTER:
+        return candidates
+    listing = "\n".join(
+        f"{i + 1}. {c.get('paper_title','')} — {(c.get('chunk_text') or '')[:220]}"
+        for i, c in enumerate(candidates))
+    out = _call_llm(
+        "You screen search results. For EACH numbered paper, decide whether it SPECIFICALLY "
+        "addresses the user's query intent — not merely sharing a broad field, an isolated "
+        "keyword, or an adjacent subtopic. Be strict: if the paper is only loosely/tangentially "
+        "related, answer NO.\n"
+        "Output a numbered list, one line per paper: '<n>: YES' or '<n>: NO'. Nothing else.\n\n"
+        f"Query: {question}\n\nPapers:\n{listing}",
+        temperature=0, prefer="openrouter")
+    verdict = {}
+    for line in (out or "").splitlines():
+        m = re.match(r"\s*(\d+)\s*[:.)-]\s*(YES|NO)\b", line, re.I)
+        if m:
+            verdict[int(m.group(1))] = m.group(2).upper() == "YES"
+    if not verdict:                                  # parse gagal total → fail-open
+        return candidates
+    return [c for i, c in enumerate(candidates, 1) if verdict.get(i, True)]
+
+
+def _is_external(c: dict) -> bool:
+    s = str(c.get("source", "")).lower()
+    return "live" in s or "semantic" in s or "openalex" in s
+
+
+def _apply_ext_quota(cands: list, top_k: int) -> list:
+    """Pilih top_k dgn target ~EXT_QUOTA porsi eksternal. Tiap grup diurut _rank_key
+    (relevansi-tier + kebaruan). Kekurangan satu sumber ditutup sumber lain."""
+    if not cands:
+        return []
+    ext = sorted((c for c in cands if _is_external(c)), key=_rank_key, reverse=True)
+    loc = sorted((c for c in cands if not _is_external(c)), key=_rank_key, reverse=True)
+    n_ext = min(len(ext), round(top_k * EXT_QUOTA))
+    n_loc = min(len(loc), top_k - n_ext)
+    n_ext = min(len(ext), top_k - n_loc)                 # isi sisa dari eksternal bila lokal kurang
+    picked = ext[:n_ext] + loc[:n_loc]
+    picked.sort(key=_rank_key, reverse=True)             # urutan tampil
+    return picked[:top_k]
 
 # Gerbang relevansi untuk mode CARI/TANYA (eksplorasi, lebih longgar dari sitasi).
 # Tanpa ini, pencarian yang nyasar (mis. akronim ambigu) tetap "memaksa" 10 hasil.
@@ -89,9 +177,15 @@ def _verify_support(claim: str, ref: dict, strict: bool = None) -> bool:
         return True
     use_strict = VERIFY_STRICT if strict is None else strict
     if use_strict:
-        rule = ("Decide whether the reference DIRECTLY supports the SPECIFIC claim — same "
-                "finding, method, or fact. Being on the same broad topic is NOT enough. "
-                "When in doubt, answer NO.")
+        rule = ("Decide whether the reference can LEGITIMATELY be cited for the SPECIFIC statement. "
+                "Answer NO if EITHER: (a) the statement is absurd, nonsensical, or a spurious "
+                "causal claim that no credible paper would support (e.g. 'models are more accurate "
+                "on Tuesdays'), OR (b) the reference actually concerns a DIFFERENT assertion and "
+                "overlaps only in broad topic or isolated keywords. "
+                "Answer YES if the reference substantively supports the statement's ACTUAL "
+                "assertion — it may be a general statement, and identical wording is not required. "
+                "Do NOT accept mere topical overlap, and do NOT reinterpret the statement to fit "
+                "the reference.")
     else:   # mode sedang: terima bila relevan-substantif, tolak hanya bila jelas tak nyambung
         rule = ("Decide whether the reference could reasonably serve as a citation for the "
                 "statement — i.e. it is on the same subject and does not contradict it. "
@@ -348,17 +442,23 @@ def cot_generate(paragraph: str, chunks: list) -> dict:
         "Step 1: What is the main claim/method/finding in the source paragraph?\n"
         "Step 2: What specific facts does each retrieved reference contain?\n"
         "Step 3: Which reference most directly supports the source claim (by overlap of facts)?\n"
-        "Step 4: Is the best reference truly relevant — does its content substantively "
-        "support the claim (same method, finding, or subject matter)? Answer No only if "
-        "the connection is merely tangential or superficial.\n"
+        "Step 4: Does the reference DIRECTLY support the SPECIFIC assertion the paragraph actually "
+        "makes — the same finding/method/fact AS WRITTEN? Sharing only the broad subject is NOT "
+        "enough. CRITICAL ANTI-SUBSTITUTION RULE: do NOT reinterpret, generalize, or change what "
+        "the claim asserts in order to fit a reference. If the only way to connect them is to cite "
+        "a DIFFERENT claim than what the paragraph literally states (e.g. the paragraph says 'X on "
+        "Tuesdays' but the paper is about 'batch size'), answer No. If the paragraph's specific "
+        "assertion is not actually supported by any reference, answer No. When in doubt, answer No.\n"
         "Step 5: If relevant, write ONE coherent academic sentence (in the SAME language as the "
-        "source paragraph) that explains what the chosen reference contributes or demonstrates "
-        "in relation to the source claim, as it would appear in a literature review.\n"
+        "source paragraph) that PRESERVES the paragraph's original claim and attributes it to the "
+        "reference, as in a literature review.\n"
         "  Rules for the sentence:\n"
-        "  - Describe the method/approach/finding at a conceptual level (what & why), do NOT dump "
-        "raw numbers, statistics, dataset sizes, or copy the abstract verbatim.\n"
-        "  - It must be grounded in the chosen reference (no invented facts) but should READ "
-        "naturally and clearly explain the connection — not just list facts.\n"
+        "  - Keep the original claim's meaning — do NOT replace it with a different claim from the "
+        "reference. If you cannot keep the original meaning while grounding it in the reference, "
+        "this means the reference does not support it → go back to Step 4 and answer No.\n"
+        "  - Describe at a conceptual level (what & why), do NOT dump raw numbers, statistics, or "
+        "copy the abstract verbatim.\n"
+        "  - It must be grounded in the chosen reference (no invented facts).\n"
         "  - Do NOT include the paper title inside the sentence.\n\n"
         "IMPORTANT: Do NOT write your step-by-step reasoning as prose. "
         "Output ONLY the JSON object.\n"
@@ -491,17 +591,24 @@ def recommend(paragraph: str, top_k: int = 5, use_hyde: bool = True, use_cot: bo
         # ambil top_k TOTAL (maks 10) — bukan 10+3.
         candidates = sorted(candidates + live[:5], key=lambda c: -c.get("score", 0))[:top_k]
 
-    candidates = _gate_candidates(candidates)                # Lapis 1: buang kandidat lemah
+    candidates = _apply_ext_quota(_gate_candidates(candidates), top_k)   # Lapis 1 + ~70% eksternal + kebaruan
     gen = (cot_generate(paragraph, candidates) if use_cot
            else simple_generate(paragraph, candidates))
 
-    # Lapis 3: verifikasi independen atas referensi terpilih — gagal ⇒ dianggap reject
+    # Lapis 3: verifikasi independen atas referensi terpilih — gagal ⇒ dianggap reject.
+    # Verify KETAT untuk SEMUA pick (klaim tunggal ngawur = pintu belakang; strict wajib, tak boleh
+    # bergantung prompt CoT). Pick eksternal juga butuh floor absolut tinggi.
     if gen.get("relevant"):
         _ref0 = _match_ref(candidates, gen.get("best_reference_paper", ""))
-        if not _verify_support(paragraph, _ref0):
+        _is_ext = bool(_ref0 and "live" in str(_ref0.get("source", "")).lower())
+        _strict = True if REC_VERIFY_STRICT else (EXT_VERIFY_STRICT if _is_ext else None)
+        _ok = _ref0 is not None and not (_is_ext and _ref0.get("score", 0.0) < EXT_MIN_SIM)
+        if _ok and not _verify_support(paragraph, _ref0, strict=_strict):
+            _ok = False
+        if not _ok:
             gen["relevant"] = False
             gen["reasoning"] = (gen.get("reasoning", "") +
-                                " [Ditolak verifikasi: referensi hanya setopik, tidak mendukung klaim spesifik.]")
+                                " [Ditolak verifikasi: referensi tidak mendukung klaim SPESIFIK yang ditulis.]")
 
     # FALLBACK BERTINGKAT: bila korpus lokal tidak punya sitasi yang mendukung klaim
     # (CoT memutuskan relevant=False), ambil dari sumber eksternal live (Semantic Scholar).
@@ -509,7 +616,7 @@ def recommend(paragraph: str, top_k: int = 5, use_hyde: bool = True, use_cot: bo
         ext = recommend_external(paragraph, top_k=top_k, force_live=True)
         if ext.get("relevant") and ext.get("best_reference_paper"):
             try:
-                cands = ext.get("candidates") or []
+                cands = sorted(ext.get("candidates") or [], key=_rank_key, reverse=True)
                 bt = ext.get("best_reference_paper", "")
                 rx = next((c for c in cands if c.get("paper_title") == bt),
                           cands[0] if cands else None)
@@ -833,24 +940,40 @@ def ask_external(question: str, top_k: int = 5) -> dict:
         return {"answer": "Tidak ditemukan paper yang cukup relevan dengan pencarian ini. "
                           "Coba istilah yang lebih lengkap/spesifik (mis. kepanjangan dari singkatan).",
                 "candidates": [], "search_query": keywords, "query_note": note}
-    candidates = [c for _, c in scored[:top_k]]
+    candidates = _apply_ext_quota([c for _, c in scored], top_k)  # ~70% eksternal + urut relevansi/kebaruan
+    candidates = _filter_relevant(question, candidates)          # buang yang tak SPESIFIK menjawab query
+    if not candidates:
+        return {"answer": f"Tidak ditemukan paper yang secara spesifik membahas \"{question[:80]}\". "
+                          "Paper yang ada hanya menyinggung topik ini secara umum. Coba kata kunci yang "
+                          "lebih tepat, atau topiknya mungkin belum tercakup di korpus.",
+                "candidates": [], "search_query": keywords, "query_note": note}
 
     _attach_summaries(question, candidates)                  # kolom "Summary" ala Elicit
     listing = "\n".join(f"- [{c['year']}] {c['paper_title']} ({c['citation']}): {c['chunk_text'][:400]}"
                         for c in candidates)
     ans = _call_llm(
-        "You are a research assistant. The papers below were retrieved from an academic corpus "
-        "and live search, ranked by semantic relevance. Write a short synthesis (2-4 sentences) of what "
-        "these papers collectively say, referring to the most relevant ones by author.\n"
+        "You are a research assistant. The papers below were retrieved for the user's query.\n"
+        "FIRST, on its own first line, output a verdict: 'RELEVANT: YES' if these papers genuinely "
+        "address the query's topic, or 'RELEVANT: NO' if the query is nonsensical/incoherent OR the "
+        "papers merely share isolated keywords WITHOUT actually addressing it.\n"
+        "THEN write a short synthesis (2-4 sentences) of what the papers collectively say, referring "
+        "to the most relevant ones by author.\n"
         "STRICT GROUNDING RULES:\n"
-        "- Base your answer ONLY on the papers listed below. Do NOT add facts from your own knowledge.\n"
-        "- NEVER invent or guess the meaning/expansion of an acronym or term. If the papers do not "
-        "define it, do not define it either.\n"
-        "- If the retrieved papers do NOT actually address the question, say so plainly (e.g. "
-        "'Paper yang ditemukan tidak secara spesifik membahas topik ini') instead of forcing an answer.\n"
-        "- Answer in the SAME language as the question (Indonesian → Indonesian).\n\n"
-        f"Papers:\n{listing}\n\nQuestion: {question}\n\nAnswer:", temperature=0.3)
-    return {"answer": ans or "Tidak ada jawaban.", "candidates": candidates,
+        "- Base the synthesis ONLY on the papers listed below. Do NOT add facts from your own knowledge.\n"
+        "- NEVER invent or guess the meaning/expansion of an acronym or term.\n"
+        "- If RELEVANT is NO, the synthesis must plainly say the papers do not address the query "
+        "(e.g. 'Tidak ditemukan paper yang benar-benar membahas topik ini').\n"
+        "- Answer in the SAME language as the query (Indonesian → Indonesian).\n\n"
+        f"Papers:\n{listing}\n\nQuery: {question}\n\nOutput:", temperature=0.2)
+    ans = ans or ""
+    relevant = True                                          # parse verdict baris pertama
+    m = re.match(r"\s*RELEVANT\s*:?\s*(YES|NO)\b", ans, re.I)
+    if m:
+        relevant = m.group(1).upper() == "YES"
+        ans = ans[m.end():].lstrip("\n :.-")                 # buang baris verdict dari jawaban
+    if not relevant:
+        candidates = []                                      # jauh dari konteks → JANGAN tampilkan referensi ngawur
+    return {"answer": ans.strip() or "Tidak ada jawaban.", "candidates": candidates,
             "search_query": keywords, "query_note": note}
 
 
@@ -956,6 +1079,14 @@ def recommend_external(paragraph: str, top_k: int = 5, force_live: bool = False)
     if ref is None and candidates:
         ref = candidates[0]
 
+    # Lapis 1+3 utk fallback eksternal (sebelumnya TAK ADA): floor absolut tinggi + verify KETAT.
+    # Tutup pintu belakang "maksa/ganti klaim" pada klaim tunggal ngawur.
+    if gen.get("relevant") and ref:
+        if ref.get("score", 0.0) < EXT_MIN_SIM or not _verify_support(paragraph, ref, strict=True):
+            gen["relevant"] = False
+            gen["reasoning"] = (gen.get("reasoning", "") +
+                                " [Ditolak: tidak ada paper yang mendukung klaim SPESIFIK yang ditulis.]")
+
     apa_key = ref.get("citation", "") if ref else ""
     cited_paragraph = cite_rewrite(paragraph, apa_key) if (gen.get("relevant") and apa_key) else ""
 
@@ -1012,6 +1143,8 @@ def _find_external_ref(sentence: str, top_k: int = 5):
         cand.append({"paper_title": p["title"], "authors": a, "year": y, "citation": apa,
                      "chunk_text": p["abstract"], "score": s, "doi": p.get("doi", ""),
                      "tldr": p.get("tldr", "")})
+    # Floor absolut TINGGI dulu: eksternal luas → buang yang cuma nyerempet kata.
+    cand = [c for c in cand if c.get("score", 0.0) >= EXT_MIN_SIM]
     cand = _gate_candidates(cand)                            # Lapis 1
     if not cand:
         return None
@@ -1019,27 +1152,26 @@ def _find_external_ref(sentence: str, top_k: int = 5):
     if not gen.get("relevant"):
         return None
     ref = _match_ref(cand, gen.get("best_reference_paper", ""))
-    return ref if _verify_support(sentence, ref) else None   # Lapis 3
+    # Lapis 3 KETAT: harus mendukung klaim spesifik (setopik tak cukup) → tutup pintu belakang.
+    return ref if _verify_support(sentence, ref, strict=EXT_VERIFY_STRICT) else None
 
 
 def _rewrite_with_reference(sentence: str, ref: dict) -> str:
-    """Tulis ulang kalimat agar memuat kontribusi referensi (grounded pada abstraknya),
-    diakhiri penanda sitasi. TIDAK mengarang fakta di luar abstrak referensi."""
+    """Sisipkan sitasi. DEFAULT deterministik: taruh penanda sebelum titik akhir — bersih,
+    tanpa klausa jembatan, kata-kata asli utuh, tanpa panggilan LLM. CITE_POLISH=1 → poles LLM
+    (routed ke GPT-4o-mini yang patuh; llama cenderung tetap menambah klausa retoris)."""
     cite = ref.get("citation", "")
+    if not CITE_POLISH:
+        return _insert_cite(sentence, cite)
     prompt = (
-        "Rewrite the sentence below in an academic literature-review style so it naturally "
-        "integrates and attributes what the cited reference contributes. Use ONLY information "
-        "supported by the reference abstract — do NOT invent findings, numbers, or claims not "
-        "present in it. Preserve the author's original point, add a brief phrase reflecting what "
-        "the reference shows, and END the sentence with the marker "
-        f"\"({cite})\" right before the final period. Write in the SAME language as the sentence. "
-        "Output ONLY the rewritten sentence.\n\n"
-        f"Sentence: {sentence}\n"
-        f"Reference: {ref.get('paper_title','')}\n"
-        f"Reference abstract: {(ref.get('chunk_text') or '')[:900]}\n"
+        "Return the sentence below almost verbatim: fix only grammar/formality if strictly needed, "
+        f"and append the citation marker \"({cite})\" at the end, right before the final period. "
+        "Add NOTHING else — no explanatory or bridging clause about the reference "
+        "('as evidenced by', 'which shows', 'demonstrating', etc.). The output must be essentially "
+        "the same sentence plus the citation. Keep the SAME language. Output ONLY the sentence.\n\n"
+        f"Sentence: {sentence}"
     )
-    out = _call_llm(prompt, temperature=0.3)
-    out = (out or "").strip().strip('"')
+    out = _call_llm(prompt, temperature=0, prefer="openrouter").strip().strip('"')
     if not out:
         return _insert_cite(sentence, cite)
     if cite and f"({cite})" not in out:          # pastikan penanda ada
@@ -1150,6 +1282,9 @@ def cite_abstract(paragraph: str, top_k: int = 5, allow_external: bool = True,
                          "cited_by": ref.get("cited_by", 0), "score": ref.get("score"),
                          "chunk_text": (ref.get("chunk_text") or "")[:1200],
                          "source": source})
+    refs.sort(key=_rank_key, reverse=True)                    # daftar referensi: paper baru diutamakan
+    for i, rf in enumerate(refs, 1):                          # penomoran ulang (in-text pakai penanda, bukan nomor)
+        rf["n"] = i
     _attach_summaries(paragraph[:800], refs)                  # ringkasan AI per referensi (panel)
     return {"cited_abstract": " ".join(out_sents), "references": refs,
             "n_sentences": len(out_sents), "n_cited": len(refs)}

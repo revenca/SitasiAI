@@ -85,6 +85,14 @@ scp backend/data/faiss_index.bin             USER@SERVER_IP:/opt/sitasi-ai/backe
 scp backend/data/metadata.json               USER@SERVER_IP:/opt/sitasi-ai/backend/data/
 ```
 > Folder `external_index/vecs/` (shard .npy) TIDAK perlu — itu bahan mentah, bukan runtime.
+>
+> **Index sudah berisi 163.378 vektor**, termasuk paper fondasi (HyDE, SPECTER, SPECTER2/SciRepEval)
+> yang ditambahkan via `external_index/add_papers.py`. Jadi meng-scp file di atas sudah cukup —
+> tak perlu langkah tambahan. Untuk menambah paper lain nanti (di server):
+> ```bash
+> docker compose exec api python -m external_index.add_papers "judul atau kueri paper"
+> docker compose restart api      # index di-cache di memori, wajib restart
+> ```
 
 ### 2c. File `.env` (rahasia — buat manual di server)
 `.env` gitignored dan berisi API key. **Jangan** commit. Buat di server:
@@ -113,6 +121,27 @@ VERIFY_CITATION=1
 VERIFY_STRICT=0
 ```
 > `DATABASE_URL` TIDAK perlu diisi di sini — compose meng-set otomatis ke Postgres kontainer.
+
+**Knob kualitas (OPSIONAL)** — semua sudah punya default aman di kode, isi hanya bila ingin menyetel:
+```env
+# Anti-maksa sitasi (klaim ngawur ditolak, klaim tak boleh diganti diam-diam)
+REC_VERIFY_STRICT=1     # verify ketat utk rekomendasi 1-sitasi
+EXT_MIN_SIM=0.72        # floor cosine sumber eksternal (lebih tinggi dari lokal)
+EXT_VERIFY_STRICT=1     # verify ketat utk sitasi dari sumber eksternal
+
+# Presisi sitasi abstrak (per kalimat)
+CITE_MAX_PER_PAPER=2    # 1 paper maks berapa sitasi per dokumen (anti over-use)
+CITE_SKIP_NONCLAIM=1    # kalimat kontribusi/generik tidak disitasi
+CITE_STRICT_VERIFY=1    # verify ketat khusus abstrak
+CITE_POLISH=0           # 0 = sisip sitasi apa adanya (bersih, hemat 1 panggilan/kalimat)
+
+# Mode cari paper
+RELEVANCE_FILTER=1      # buang paper yang tak SPESIFIK menjawab query
+ASK_MIN_SIM=0.50        # floor relevansi mode cari
+ASK_REL_WIN=0.18
+EXT_QUOTA=0.70          # porsi hasil dari Semantic Scholar (lebih banyak kebaruan)
+RECENCY_BAND=0.05       # utamakan paper baru di antara yang relevansinya setara
+```
 
 ---
 

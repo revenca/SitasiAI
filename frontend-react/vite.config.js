@@ -6,7 +6,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": { target: "http://localhost:8002", changeOrigin: true, timeout: 120000, proxyTimeout: 120000, rewrite: (p) => p.replace(/^\/api/, "") },
+      "/api": { target: "http://localhost:8003", changeOrigin: true, timeout: 120000, proxyTimeout: 120000, rewrite: (p) => p.replace(/^\/api/, "") },
     },
   },
 });
