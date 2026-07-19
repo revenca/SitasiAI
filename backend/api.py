@@ -4,6 +4,8 @@ Jalankan:  python -m uvicorn backend.api:app --reload --port 8000
 Docs   :  http://localhost:8000/docs
 """
 import os
+import re
+import json
 import logging
 
 from fastapi import FastAPI, Depends, HTTPException, Request
@@ -223,3 +225,41 @@ def history(db: Session = Depends(get_db), user: models.User = Depends(auth.get_
             .order_by(models.SearchHistory.created_at.desc()).limit(20).all())
     return [{"query": r.query, "citation_text": r.citation_text,
              "best_paper": r.best_paper, "created_at": str(r.created_at)} for r in rows]
+
+
+# ── Riwayat chat ANONIM (tanpa login) — disimpan per-ID browser di server ────────
+_ANON_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")   # format ID aman (cegah injeksi/abuse)
+ANON_MAX_BYTES = 600_000                          # batas ukuran blob per-ID
+
+class AnonHistoryReq(BaseModel):
+    data: list                                     # daftar sesi chat
+
+
+@app.get("/anon-history/{anon_id}")
+def get_anon_history(anon_id: str, db: Session = Depends(get_db)):
+    if not _ANON_RE.match(anon_id):
+        raise HTTPException(400, "anon_id tidak valid")
+    row = db.query(models.AnonChat).filter(models.AnonChat.anon_id == anon_id).first()
+    if not row:
+        return {"data": [], "updated_at": None}
+    try:
+        data = json.loads(row.data or "[]")
+    except Exception:
+        data = []
+    return {"data": data, "updated_at": row.updated_at.isoformat() if row.updated_at else None}
+
+
+@app.put("/anon-history/{anon_id}")
+def put_anon_history(anon_id: str, req: AnonHistoryReq, db: Session = Depends(get_db)):
+    if not _ANON_RE.match(anon_id):
+        raise HTTPException(400, "anon_id tidak valid")
+    blob = json.dumps(req.data[:50], ensure_ascii=False)   # maks 50 sesi
+    if len(blob.encode("utf-8")) > ANON_MAX_BYTES:
+        raise HTTPException(413, "riwayat terlalu besar")
+    row = db.query(models.AnonChat).filter(models.AnonChat.anon_id == anon_id).first()
+    if row:
+        row.data = blob
+    else:
+        db.add(models.AnonChat(anon_id=anon_id, data=blob))
+    db.commit()
+    return {"ok": True}

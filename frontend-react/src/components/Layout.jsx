@@ -8,12 +8,27 @@ import { IconSearch, IconFile, IconHelp, IconPlus, IconEdit, IconTrash, IconChat
 const EASE = [0.22, 0.61, 0.36, 1];
 
 export default function Layout({ children }) {
-  const { sessions, activeId, newChat, openChat, renameChat, deleteChat } = useChat();
+  const { sessions, activeId, newChat, openChat, renameChat, deleteChat, anonId, restoreFrom } = useChat();
   const loc = useLocation();
   const nav = useNavigate();
   const [editingId, setEditingId] = useState(null);
   const [editText, setEditText] = useState("");
   const [navOpen, setNavOpen] = useState(false);   // sidebar drawer (mobile)
+  const [restoreCode, setRestoreCode] = useState("");
+  const [restoreMsg, setRestoreMsg] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  const copyId = () => {
+    navigator.clipboard?.writeText(anonId || "").then(() => {
+      setCopied(true); setTimeout(() => setCopied(false), 1500);
+    }).catch(() => {});
+  };
+  const doRestore = async () => {
+    setRestoreMsg("Memuat…");
+    const r = await restoreFrom(restoreCode);
+    setRestoreMsg(r.ok ? `✓ ${r.count} chat dipulihkan` : `✗ ${r.reason}`);
+    if (r.ok) { setRestoreCode(""); if (loc.pathname !== "/") nav("/"); }
+  };
 
   const goChat = (id) => { openChat(id); if (loc.pathname !== "/") nav("/"); setNavOpen(false); };
   const startRename = (e, s) => { e.stopPropagation(); setEditingId(s.id); setEditText(s.title); };
@@ -68,6 +83,25 @@ export default function Layout({ children }) {
         </div>
 
         <div className="sidebar-footer">
+          <details className="anon-box">
+            <summary title="Riwayat disimpan per-perangkat. Simpan kode ini untuk memulihkan di perangkat lain.">
+              🔑 Kode history
+            </summary>
+            <div className="anon-body">
+              <div className="anon-id-row">
+                <code className="anon-id" title={anonId}>{anonId}</code>
+                <button className="anon-copy" onClick={copyId}>{copied ? "✓" : "Salin"}</button>
+              </div>
+              <p className="anon-hint">Simpan kode ini untuk membuka riwayatmu di perangkat/browser lain, atau setelah cache terhapus.</p>
+              <div className="anon-restore">
+                <input value={restoreCode} placeholder="Tempel kode untuk memulihkan…"
+                  onChange={(e) => setRestoreCode(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") doRestore(); }} />
+                <button onClick={doRestore} disabled={!restoreCode.trim()}>Pulihkan</button>
+              </div>
+              {restoreMsg && <div className="anon-msg">{restoreMsg}</div>}
+            </div>
+          </details>
           <div className="user-chip">
             <div className="avatar"><BookLogo size={16} color="#fff" /></div>
             <div>

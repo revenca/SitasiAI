@@ -34,3 +34,13 @@ class SearchHistory(Base):
     created_at    = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="history")
+
+
+class AnonChat(Base):
+    """Riwayat chat pengguna anonim (tanpa login), disimpan per-ID browser (UUID).
+    data = blob JSON daftar sesi chat (mirror dari localStorage) → persist di server."""
+    __tablename__ = "anon_chat"
+    id         = Column(Integer, primary_key=True, index=True)
+    anon_id    = Column(String, unique=True, index=True, nullable=False)
+    data       = Column(Text, default="[]")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

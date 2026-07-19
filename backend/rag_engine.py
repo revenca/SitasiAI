@@ -1,6 +1,4 @@
 """
-backend/rag_engine.py — Core RAG engine untuk rekomendasi sitasi.
-Mandiri (tidak bergantung skrip eksperimen). Komponen:
   SPECTER2 (embedding) + FAISS (retrieval) + GPT-4o-mini (HyDE & CoT).
 """
 import os
@@ -51,6 +49,12 @@ REL_WIN  = float(os.getenv("REL_WIN", "0.08"))    # jendela relatif thd skor ter
 VERIFY_CITATION = os.getenv("VERIFY_CITATION", "1") == "1"
 VERIFY_STRICT   = os.getenv("VERIFY_STRICT", "1") == "1"   # 1=ketat, 0=sedang (lenient)
 
+# ── Penjaga sitasi ABSTRAK (per kalimat) — hasil pengukuran: skor semua tinggi, ────
+# jadi threshold TAK cukup. Perlu: cap per-paper + skip kalimat non-klaim + verify ketat.
+CITE_MAX_PER_PAPER  = int(os.getenv("CITE_MAX_PER_PAPER", "2"))     # 1 paper max N sitasi/dokumen
+CITE_STRICT_VERIFY  = os.getenv("CITE_STRICT_VERIFY", "1") == "1"   # verify ketat khusus abstrak
+CITE_SKIP_NONCLAIM  = os.getenv("CITE_SKIP_NONCLAIM", "1") == "1"   # skip kalimat tanpa klaim
+
 # Gerbang relevansi untuk mode CARI/TANYA (eksplorasi, lebih longgar dari sitasi).
 # Tanpa ini, pencarian yang nyasar (mis. akronim ambigu) tetap "memaksa" 10 hasil.
 ASK_MIN_SIM = float(os.getenv("ASK_MIN_SIM", "0.50"))   # floor absolut; di bawah ini = sampah
@@ -77,12 +81,14 @@ def _gate_candidates(cands: list) -> list:
             if c.get("score", 0.0) >= MIN_SIM and c.get("score", 0.0) >= top - REL_WIN]
 
 
-def _verify_support(claim: str, ref: dict) -> bool:
+def _verify_support(claim: str, ref: dict, strict: bool = None) -> bool:
     """Lapis 3: pemeriksaan independen — apakah referensi BENAR-BENAR mendukung klaim
-    spesifik (bukan sekadar setopik). Gagal verifikasi → sitasi ditolak."""
+    spesifik (bukan sekadar setopik). Gagal verifikasi → sitasi ditolak.
+    strict=None → pakai VERIFY_STRICT global; True/False → paksa mode (cite_abstract pakai True)."""
     if not VERIFY_CITATION or not ref:
         return True
-    if VERIFY_STRICT:
+    use_strict = VERIFY_STRICT if strict is None else strict
+    if use_strict:
         rule = ("Decide whether the reference DIRECTLY supports the SPECIFIC claim — same "
                 "finding, method, or fact. Being on the same broad topic is NOT enough. "
                 "When in doubt, answer NO.")
@@ -479,7 +485,7 @@ def recommend(paragraph: str, top_k: int = 5, use_hyde: bool = True, use_cot: bo
             live.append({"paper_title": p["title"], "authors": a, "year": y, "citation": apa,
                          "chunk_text": p["abstract"], "score": float(np.dot(emb, v)),
                          "doi": p.get("doi", ""), "cited_by": p.get("cited_by", 0),
-                         "source": "Semantic Scholar (live)"})
+                         "tldr": p.get("tldr", ""), "source": "Semantic Scholar (live)"})
         live.sort(key=lambda c: -c["score"])
         # Live BERSAING dgn basis data dalam kuota yang sama: gabung, urutkan skor,
         # ambil top_k TOTAL (maks 10) — bukan 10+3.
@@ -682,8 +688,9 @@ def _search_keywords(paragraph: str) -> str:
 def _fetch_s2(query: str, limit: int) -> list:
     """Semantic Scholar; retry ringan. Return [] bila gagal/limit."""
     headers = {"x-api-key": S2_API_KEY} if S2_API_KEY else {}
+    # 'tldr' = ringkasan 1-kalimat AI bawaan S2 (SciTLDR) → pakai langsung, hemat panggilan LLM.
     params = {"query": query, "limit": limit,
-              "fields": "title,abstract,year,authors,citationCount,externalIds"}
+              "fields": "title,abstract,year,authors,citationCount,externalIds,tldr"}
     for attempt in range(3):
         try:
             r = requests.get(S2_URL, params=params, headers=headers, timeout=20)
@@ -698,6 +705,7 @@ def _fetch_s2(query: str, limit: int) -> list:
                                 "authors": [a["name"] for a in (p.get("authors") or [])],
                                 "cited_by": p.get("citationCount") or 0,
                                 "doi": f"https://doi.org/{doi}" if doi else "",
+                                "tldr": (p.get("tldr") or {}).get("text", "") or "",
                                 "source": "Semantic Scholar"})
                 return out
             if r.status_code == 429:
@@ -807,7 +815,8 @@ def ask_external(question: str, top_k: int = 5) -> dict:
             pool.append({"paper_title": p["title"], "authors": authors, "year": year,
                          "citation": apa, "chunk_text": p["abstract"],
                          "score": float(np.dot(qv, v)), "doi": p["doi"],
-                         "cited_by": p["cited_by"], "source": p["source"]})
+                         "cited_by": p["cited_by"], "tldr": p.get("tldr", ""),
+                         "source": p["source"]})
 
     if not pool:
         return {"answer": "Sumber tidak dapat dijangkau (korpus lokal & live keduanya kosong). Coba lagi.",
@@ -862,14 +871,42 @@ def _summarize_source(question: str, c: dict) -> str:
     return (out or "").strip()
 
 
+def _translate_batch_id(texts: list) -> list:
+    """Terjemahkan BANYAK kalimat ke Indonesia dalam SATU panggilan LLM (hemat kuota).
+    Return list sejajar; fallback ke teks asli bila baris gagal diparse."""
+    if not texts:
+        return []
+    numbered = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(texts))
+    out = _call_llm(
+        "Translate each numbered sentence to Indonesian. Keep technical terms and method/model "
+        "names in English. Return EXACTLY the same numbered list — one translation per line, "
+        "same numbers, no extra text.\n\n" + numbered,
+        temperature=0, prefer="groq")
+    trans = {}
+    for line in (out or "").splitlines():
+        m = re.match(r"\s*(\d+)[.)]\s*(.+)", line)
+        if m:
+            trans[int(m.group(1))] = m.group(2).strip()
+    return [trans.get(i + 1, texts[i]) for i in range(len(texts))]
+
+
 def _attach_summaries(question: str, candidates: list):
-    """Isi field 'summary' tiap kandidat secara PARALEL (Groq)."""
+    """Isi field 'summary'. Paper S2 yang punya 'tldr' (ringkasan AI bawaan) → diterjemahkan
+    ke Indonesia secara BATCH (1 panggilan utk semua → hemat kuota, bahasa konsisten).
+    Paper lokal/OpenAlex (tanpa tldr) → ringkasan kontekstual paralel via Groq."""
     if not candidates:
         return
-    with ThreadPoolExecutor(max_workers=min(len(candidates), 6)) as ex:
-        sums = list(ex.map(lambda c: _summarize_source(question, c), candidates))
-    for c, s in zip(candidates, sums):
-        c["summary"] = s or (c.get("chunk_text", "")[:200])   # fallback: cuplikan abstrak
+    tldr_cands = [c for c in candidates if (c.get("tldr") or "").strip()]
+    need       = [c for c in candidates if not (c.get("tldr") or "").strip()]
+    if tldr_cands:                                # S2 tldr → 1 panggilan terjemah utk semua
+        trans = _translate_batch_id([c["tldr"].strip() for c in tldr_cands])
+        for c, t in zip(tldr_cands, trans):
+            c["summary"] = t
+    if need:                                      # lokal/OpenAlex → ringkas kontekstual (paralel)
+        with ThreadPoolExecutor(max_workers=min(len(need), 6)) as ex:
+            sums = list(ex.map(lambda c: _summarize_source(question, c), need))
+        for c, s in zip(need, sums):
+            c["summary"] = s or (c.get("chunk_text", "")[:200])   # fallback: cuplikan abstrak
 
 
 def recommend_external(paragraph: str, top_k: int = 5, force_live: bool = False) -> dict:
@@ -906,7 +943,8 @@ def recommend_external(paragraph: str, top_k: int = 5, force_live: bool = False)
             authors, year, apa = _external_citation(p)
             candidates.append({"paper_title": p["title"], "authors": authors, "year": year,
                                "citation": apa, "chunk_text": p["abstract"], "score": s,
-                               "doi": p["doi"], "cited_by": p["cited_by"], "source": p["source"]})
+                               "doi": p["doi"], "cited_by": p["cited_by"],
+                               "tldr": p.get("tldr", ""), "source": p["source"]})
 
     gen = cot_generate(paragraph, candidates)
     best_title = gen.get("best_reference_paper", "")
@@ -940,7 +978,6 @@ def recommend_external(paragraph: str, top_k: int = 5, force_live: bool = False)
 # ── Auto-sitasi abstrak: sisipkan (Penulis, Tahun) per kalimat + daftar referensi ──
 # Paste abstrak/paragraf → tiap kalimat dicarikan referensi (lokal → fallback eksternal live)
 # → penanda sitasi disisipkan inline. Retrieval per-kalimat pakai embedding langsung
-# (tanpa HyDE) — dijustifikasi temuan bahwa HyDE ≈ baseline pada korpus ini.
 def _split_sentences(text: str) -> list:
     parts = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", text).strip())
     return [p.strip() for p in parts if len(p.strip()) >= 25]
@@ -973,7 +1010,8 @@ def _find_external_ref(sentence: str, top_k: int = 5):
     for s, p in scored[:top_k]:
         a, y, apa = _external_citation(p)
         cand.append({"paper_title": p["title"], "authors": a, "year": y, "citation": apa,
-                     "chunk_text": p["abstract"], "score": s, "doi": p.get("doi", "")})
+                     "chunk_text": p["abstract"], "score": s, "doi": p.get("doi", ""),
+                     "tldr": p.get("tldr", "")})
     cand = _gate_candidates(cand)                            # Lapis 1
     if not cand:
         return None
@@ -1009,49 +1047,98 @@ def _rewrite_with_reference(sentence: str, ref: dict) -> str:
     return out
 
 
-def _cite_one_sentence(sent: str, top_k: int, allow_external: bool, prefer_external: bool):
-    """Proses 1 kalimat (dipanggil paralel): cari referensi → rewrite dgn sitasi.
-    Return (kalimat_hasil, ref|None, source). Error apa pun → kalimat dibiarkan tanpa
-    sitasi (graceful), TIDAK menjatuhkan seluruh request."""
+def _is_citable_claim(sent: str) -> bool:
+    """True bila kalimat = klaim latar/prior-work yang PANTAS disitasi. False bila kontribusi/
+    metode/hasil penulis sendiri atau kalimat generik. (Hasil ukur: kalimat kosong 'experiments
+    demonstrate SOTA' skornya 0.93 → threshold buta, harus difilter di sini.)"""
+    if not CITE_SKIP_NONCLAIM:
+        return True
+    out = _call_llm(
+        "In academic writing, would the sentence below normally carry a citation to prior work? "
+        "Answer NO if it states the authors' OWN contribution/aim/method/result (e.g. 'we propose', "
+        "'in this paper', 'our experiments show', 'results demonstrate ... performance'), a mere "
+        "transition, or generic filler with no citable factual claim about background/prior work.\n"
+        "Answer with exactly one word: YES or NO.\n\n"
+        f"Sentence: {sent}", temperature=0, prefer="groq")
+    return (out or "").strip().upper().startswith("Y")
+
+
+def _select_citation(sent: str, top_k: int, allow_external: bool, prefer_external: bool) -> dict:
+    """Fase SELEKSI 1 kalimat (belum rewrite). Return {sent, ref, alts, source, skipped}.
+    alts = kandidat lokal ter-gate (utk reassignment saat kena cap). Error → skip graceful."""
     try:
-        return _cite_one_sentence_inner(sent, top_k, allow_external, prefer_external)
-    except Exception as e:
-        print(f"[cite_abstract] kalimat gagal ({type(e).__name__}: {e}) — dilewati tanpa sitasi")
-        return sent, None, "lokal"
-
-
-def _cite_one_sentence_inner(sent: str, top_k: int, allow_external: bool, prefer_external: bool):
-    ref, source = None, "lokal"
-    if prefer_external:                                       # 🌐 ON → eksternal langsung
-        ref = _find_external_ref(sent, top_k)
-        if ref:
-            source = "eksternal"
-    else:
-        cand = _gate_candidates(search_database(embed(sent), top_k=top_k))  # Lapis 1
-        gen = cot_generate(sent, cand) if cand else {"relevant": False}
-        if gen.get("relevant"):
-            ref = _match_ref(cand, gen.get("best_reference_paper", ""))
-            if not _verify_support(sent, ref):                # Lapis 3
-                ref = None
-        if ref is None and allow_external:                    # fallback eksternal live
+        if not _is_citable_claim(sent):                       # kalimat non-klaim → tak disitasi
+            return {"sent": sent, "ref": None, "alts": [], "source": "lokal", "skipped": True}
+        ref, source, alts = None, "lokal", []
+        if prefer_external:                                   # 🌐 ON → eksternal langsung
             ref = _find_external_ref(sent, top_k)
             if ref:
                 source = "eksternal"
-    if ref and ref.get("citation"):
-        return _rewrite_with_reference(sent, ref), ref, source
-    return sent, None, source
+        else:
+            alts = _gate_candidates(search_database(embed(sent), top_k=top_k))   # Lapis 1
+            gen = cot_generate(sent, alts) if alts else {"relevant": False}
+            if gen.get("relevant"):
+                ref = _match_ref(alts, gen.get("best_reference_paper", ""))
+                if not _verify_support(sent, ref, strict=CITE_STRICT_VERIFY):    # Lapis 3 (ketat)
+                    ref = None
+            if ref is None and allow_external:                # fallback eksternal live
+                ref = _find_external_ref(sent, top_k)
+                if ref:
+                    source = "eksternal"
+        return {"sent": sent, "ref": ref, "alts": alts, "source": source, "skipped": False}
+    except Exception as e:
+        print(f"[cite_abstract] kalimat gagal ({type(e).__name__}: {e}) — dilewati")
+        return {"sent": sent, "ref": None, "alts": [], "source": "lokal", "skipped": True}
+
+
+def _reassign_under_cap(pick: dict, used: dict) -> dict:
+    """Paper terpilih sudah mentok cap → cari alternatif di kandidat lain yang masih di bawah
+    cap DAN lolos verify ketat (biar variatif, bukan asal ganti). None bila tak ada."""
+    chosen_cit = (pick.get("ref") or {}).get("citation")
+    for c in pick.get("alts", []):
+        cit = c.get("citation")
+        if not cit or cit == chosen_cit or used.get(cit, 0) >= CITE_MAX_PER_PAPER:
+            continue
+        if _verify_support(pick["sent"], c, strict=CITE_STRICT_VERIFY):
+            return c
+    return None
 
 
 def cite_abstract(paragraph: str, top_k: int = 5, allow_external: bool = True,
                   prefer_external: bool = False) -> dict:
     """Tiap kalimat abstrak: cari referensi → tulis ulang memuat kontribusi paper + sitasi.
-    Kalimat diproses PARALEL (independen) → latensi ~1 kalimat, bukan jumlah kalimat.
-    prefer_external=True (toggle 🌐): ambil langsung dari eksternal live, lewati korpus lokal."""
+    Penjaga kualitas (hasil pengukuran skor): (1) skip kalimat non-klaim, (2) verify ketat,
+    (3) cap per-paper max CITE_MAX_PER_PAPER + reassign ke alternatif variatif.
+    Fase: seleksi PARALEL → cap SEKUENSIAL → rewrite PARALEL.
+    prefer_external=True (🌐): ambil langsung eksternal live, lewati korpus lokal."""
     init()
     sents = _split_sentences(paragraph)
     with ThreadPoolExecutor(max_workers=min(len(sents), 4) or 1) as ex:
-        results = list(ex.map(
-            lambda s: _cite_one_sentence(s, top_k, allow_external, prefer_external), sents))
+        picks = list(ex.map(
+            lambda s: _select_citation(s, top_k, allow_external, prefer_external), sents))
+
+    # Cap per-paper + reassign — SEKUENSIAL (jaga urutan kalimat; sitasi pertama dipertahankan).
+    used, finals = {}, []
+    for p in picks:
+        ref, source = p["ref"], p["source"]
+        cit = (ref or {}).get("citation")
+        if ref and cit and used.get(cit, 0) >= CITE_MAX_PER_PAPER:   # sudah mentok → variasikan
+            alt = _reassign_under_cap(p, used)
+            ref, source = (alt, "lokal") if alt else (None, source)
+            cit = (ref or {}).get("citation")
+        if ref and cit:
+            used[cit] = used.get(cit, 0) + 1
+        finals.append((p["sent"], ref, source))
+
+    # Rewrite PARALEL (kalimat tanpa ref → dibiarkan apa adanya).
+    def _rw(item):
+        sent, ref, source = item
+        if ref and ref.get("citation"):
+            return _rewrite_with_reference(sent, ref), ref, source
+        return sent, None, source
+    with ThreadPoolExecutor(max_workers=min(len(finals), 4) or 1) as ex:
+        results = list(ex.map(_rw, finals))
+
     out_sents, refs, seen = [], [], {}
     for text, ref, source in results:                         # urutan kalimat terjaga
         out_sents.append(text)
