@@ -30,6 +30,14 @@ services:
       - ./external_index:/app/external_index   # index FAISS 163k + metadata (dipakai search)
       - ./backend/data:/app/backend/data       # index korpus 100 + metadata web
       - hf_models:/models                      # cache model SPECTER2 (~900 MB, sekali unduh)
+    # Model SPECTER2 dimuat saat startup (unduh ~440 MB sekali) → beri start_period longgar.
+    # `docker compose ps` akan menampilkan "healthy" begitu API benar-benar siap melayani.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
 
   web:
     build: ./frontend-react

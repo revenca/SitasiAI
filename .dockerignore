@@ -1,0 +1,41 @@
+# Build context untuk service `api` HANYA butuh requirements.txt + backend/
+# Sisanya jangan dikirim ke Docker daemon (data index ~670 MB sudah di-mount sbg volume).
+# Tanpa file ini, `docker compose build` mengirim >2 GB → lambat & boros disk di server.
+
+.git
+.gitignore
+.venv
+venv
+env
+node_modules
+__pycache__
+**/__pycache__
+*.pyc
+
+# Frontend punya build context sendiri (./frontend-react + .dockerignore-nya)
+frontend-react
+
+# Data besar — di-mount sebagai volume saat runtime, TIDAK perlu di image
+external_index
+backend/data
+output_teks
+evaluasi
+docs
+*.bin
+*.jsonl
+*.bak
+*.npy
+
+# Rahasia — dibaca compose via env_file, jangan dibakar ke image
+.env
+.env.*
+
+# Lain-lain
+*.log
+*.pid
+app.db
+scratchpad
+DEPLOY.md
+README.md
+start.ps1
+tests
