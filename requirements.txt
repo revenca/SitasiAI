@@ -1,10 +1,12 @@
-# Core
-transformers==4.44.2
+# Core — versi DIKUNCI sesuai kombinasi yang terbukti jalan (jangan diubah sembarangan):
+#  · adapters 1.3.0 mensyaratkan transformers ~=4.57.6 (pin lama 4.44.2 bikin build gagal)
+#  · faiss-cpu 1.8.0 dibangun utk numpy 1.x → numpy 2.x memecahkannya saat runtime
+transformers==4.57.6
 adapters==1.3.0                 # AutoAdapterModel (SPECTER2 proximity adapter)
 torch>=2.2.0
 faiss-cpu==1.8.0
 pandas>=2.0.0
-numpy>=1.24.0
+numpy==1.26.4
 
 # Web server (API)
 fastapi==0.136.3
