@@ -133,7 +133,28 @@ def list_papers(q: str = "", category: str = "", limit: int = 50, offset: int = 
             res = vectordb.list_papers(q=q, limit=min(limit, 100), offset=offset)
             return {"source": "database", "total": res["total"], "papers": res["papers"]}
     except Exception:
-        log.exception("list_papers via vectordb gagal; fallback korpus")
+        log.exception("list_papers via vectordb gagal; fallback index FAISS")
+
+    # Fallback 2: metadata index FAISS 163k — korpus yang BENAR-BENAR dicari, sudah di memori.
+    # Tanpa ini Library tampil kosong di server baru (pgvector belum dimigrasi & tabel papers
+    # belum di-seed), padahal pencarian berjalan normal.
+    try:
+        if rag_engine._init_external_index() and rag_engine._ext_meta:
+            meta = rag_engine._ext_meta
+            if q:
+                ql = q.lower()
+                meta = [m for m in meta if ql in (m.get("title") or "").lower()]
+            total = len(meta)
+            page = meta[offset: offset + min(limit, 100)]
+            return {"source": "database", "total": total,
+                    "papers": [{"title": m.get("title", ""),
+                                "year": str(m.get("year") or ""),
+                                "authors": ", ".join((m.get("authors") or [])[:3]),
+                                "cited_by": m.get("cited_by", 0),
+                                "doi": m.get("doi", "")} for m in page]}
+    except Exception:
+        log.exception("list_papers via index FAISS gagal; fallback korpus 100")
+
     query = db.query(models.Paper)
     if q:
         query = query.filter(models.Paper.title.ilike(f"%{q}%"))
