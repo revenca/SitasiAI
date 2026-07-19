@@ -9,8 +9,8 @@ import BookLogo from "../components/BookLogo.jsx";
 import { useChat } from "../chat.jsx";
 
 const EXAMPLES = [
-  "Apa itu HyDE dan kenapa dipakai di sistem ini?",
-  "Paper apa saja di korpus yang membahas deteksi objek dengan UAV?",
+  "Deep learning telah meningkatkan akurasi diagnosis pada citra medis.",
+  "Cari paper tentang deteksi objek menggunakan UAV",
   "Accurate three-dimensional segmentation of brain structures from MRI scans is often constrained by limited GPU memory, motivating patch-based approaches that process smaller sub-volumes.",
 ];
 
@@ -27,9 +27,9 @@ function isQuestion(t) {
 const PH_PROMPTS = [
   "Tempel paragraf draf yang butuh sitasi…",
   "Electronic nose systems based on gas sensor arrays…",
-  "Apa itu HyDE dan kenapa dipakai di sistem ini?",
+  "Deep learning telah meningkatkan akurasi diagnosis citra medis…",
   "Accurate 3D segmentation of brain structures from MRI…",
-  "Paper apa saja tentang deteksi objek dengan UAV?",
+  "Cari paper tentang deteksi objek menggunakan UAV…",
 ];
 
 export default function Home() {
