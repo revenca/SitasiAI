@@ -74,16 +74,24 @@ cd /opt/sitasi-ai
 > Repo privat? Pakai Personal Access Token:
 > `git clone https://<TOKEN>@github.com/revenca/sitasi-ai.git /opt/sitasi-ai`
 
-### 2b. Data besar (TIDAK ikut git — transfer manual)
-File ini gitignored, jalankan dari **komputer lokal (Windows)**, di folder `d:\TUGAS AKHIR\TA`:
+### 2b. Data besar (TIDAK ikut git — ambil dari GitHub Release)
+File index >100 MB tak bisa masuk git, jadi disimpan sebagai **Release asset** (tag `data-v1`).
+Jalankan **di server**, di dalam `/opt/sitasi-ai`:
 
 ```bash
-# 4 file wajib (total ~640 MB) — jalankan di PowerShell/Git Bash lokal
-scp external_index/faiss_index_external.bin  USER@SERVER_IP:/opt/sitasi-ai/external_index/
-scp external_index/metadata_external.jsonl   USER@SERVER_IP:/opt/sitasi-ai/external_index/
-scp backend/data/faiss_index.bin             USER@SERVER_IP:/opt/sitasi-ai/backend/data/
-scp backend/data/metadata.json               USER@SERVER_IP:/opt/sitasi-ai/backend/data/
+B=https://github.com/revenca/SitasiAI/releases/download/data-v1
+wget -O external_index/faiss_index_external.bin  $B/faiss_index_external.bin   # ~502 MB
+wget -O external_index/metadata_external.jsonl   $B/metadata_external.jsonl    # ~133 MB
+wget -O backend/data/faiss_index.bin             $B/faiss_index.bin            # ~29 MB
+wget -O backend/data/metadata.json               $B/metadata.json              # ~6 MB
+
+# verifikasi ukuran (jangan lanjut kalau ada yang jauh lebih kecil = download putus)
+ls -lh external_index/faiss_index_external.bin external_index/metadata_external.jsonl \
+       backend/data/faiss_index.bin backend/data/metadata.json
 ```
+
+> Alternatif (tanpa Release): `scp` dari laptop —
+> `scp external_index/faiss_index_external.bin USER@SERVER_IP:/opt/sitasi-ai/external_index/` dst.
 > Folder `external_index/vecs/` (shard .npy) TIDAK perlu — itu bahan mentah, bukan runtime.
 >
 > **Index sudah berisi 163.378 vektor**, termasuk paper fondasi (HyDE, SPECTER, SPECTER2/SciRepEval)
