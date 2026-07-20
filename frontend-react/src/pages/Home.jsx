@@ -386,7 +386,7 @@ function CiteBubble({ cite, onRefs }) {
             {cite.references.map((r) => (
               <li key={r.n}>
                 {r.doi ? <a href={r.doi} target="_blank" rel="noreferrer">{r.paper_title}</a> : r.paper_title}
-                {" "}— <b>{r.citation}</b>
+                {" "}<b>{r.citation}</b>
                 <span style={{ fontSize: 11, marginLeft: 6, color: r.source === "eksternal" ? "#0D6CB5" : "#2AA198" }}>
                   {r.source === "eksternal" ? "🌐" : "📚"}
                 </span>
@@ -424,8 +424,8 @@ function BotBubble({ m, onRefs }) {
           {r.best_reference_doi && <> · <a href={r.best_reference_doi} target="_blank" rel="noreferrer">DOI</a></>}
         </div>
         <div className="ref-meta">
-          <span><b>Author:</b> {r.best_reference_authors || "—"}</span>
-          <span><b>Year:</b> {r.best_reference_year || "—"}</span>
+          <span><b>Author:</b> {r.best_reference_authors || "-"}</span>
+          <span><b>Year:</b> {r.best_reference_year || "-"}</span>
         </div>
         {r.best_reference_summary && (
           <p className="ref-summary">{r.best_reference_summary}</p>

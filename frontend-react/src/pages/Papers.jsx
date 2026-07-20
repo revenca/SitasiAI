@@ -30,7 +30,7 @@ export default function Papers() {
       <h1>Library</h1>
       <p className="muted">
         {total.toLocaleString("id-ID")} paper di basis data
-        {source === "korpus" ? " (korpus lokal)" : ""} — menampilkan {papers.length}
+        {source === "korpus" ? " (korpus lokal)" : ""}, menampilkan {papers.length}
       </p>
 
       <div className="papers-filter">
@@ -41,7 +41,7 @@ export default function Papers() {
       <div className="papers-grid">
         {papers.map((p, i) => (
           <div className="paper-card stagger-item" style={{ animationDelay: `${Math.min(i, 12) * 0.03}s` }} key={`${p.title}-${i}`}>
-            <div className="paper-cat">{p.year || "—"}{p.cited_by ? ` · dikutip ${p.cited_by.toLocaleString("id-ID")}×` : ""}</div>
+            <div className="paper-cat">{p.year || "-"}{p.cited_by ? ` · dikutip ${p.cited_by.toLocaleString("id-ID")}×` : ""}</div>
             <div className="paper-title">
               {p.doi ? <a href={p.doi} target="_blank" rel="noreferrer">{p.title}</a> : p.title}
             </div>

@@ -51,7 +51,7 @@ export default function Layout({ children }) {
         <button className="nav-close" onClick={() => setNavOpen(false)} aria-label="Tutup menu">
           <IconClose size={18} />
         </button>
-        <Link to="/" className="brand"><BookLogo size={24} color="#fff" /> <span><b>Sitasi</b>AI</span></Link>
+        <Link to="/" className="brand"><BookLogo size={32} color="#fff" /> <span><b>Sitasi</b>AI</span></Link>
 
         <div className="nav-section">WORKFLOWS</div>
         <NavItem to="/" icon={<IconSearch size={ICON} />} label="Pembuatan Sitasi" />
@@ -103,10 +103,11 @@ export default function Layout({ children }) {
             </div>
           </details>
           <div className="user-chip">
-            <div className="avatar"><BookLogo size={16} color="#fff" /></div>
+            {/* tanpa bulatan: logo buku langsung, ukuran layak */}
+            <BookLogo size={30} color="#fff" />
             <div>
               <div className="user-name">SitasiAI</div>
-              <div className="user-email">Tools Sitasi — ITS</div>
+              <div className="user-email">Tools Sitasi ITS</div>
             </div>
           </div>
         </div>
