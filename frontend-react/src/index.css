@@ -69,7 +69,11 @@ button { cursor: pointer; font-family: inherit; }
 *::-webkit-scrollbar-track { background: transparent; }
 
 /* ───────── App shell ───────── */
-.app-shell { display: flex; min-height: 100vh; }
+.app-shell { display: flex; height: 100dvh; }
+/* Rantai tinggi: shell dikunci ke tinggi layar, hanya area dalam yang menggulir.
+   Tanpa ini halaman ikut menggulir di HP -> composer melayang & ada ruang kosong. */
+html, body, #root { height: 100%; }
+body { overflow: hidden; }   /* aplikasi layar-penuh: hanya area dalam yang menggulir */
 
 .sidebar {
   width: 250px; background: var(--sidebar-bg); border-right: 1px solid var(--border);
@@ -126,14 +130,17 @@ button { cursor: pointer; font-family: inherit; }
 .logout:hover { background: #fbe9e9; color: #b91c1c; border-color: #f0c4c4; }
 
 /* ───────── Main ───────── */
-.main { flex: 1; display: flex; flex-direction: column; }
+.main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .topbar {
   display: flex; justify-content: space-between; align-items: center;
   padding: 12px 24px; border-bottom: 1px solid var(--border);
 }
 .topbar-right { display: flex; align-items: center; gap: 16px; }
 .help { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: .9rem; }
-.content { flex: 1; padding: 24px; max-width: 880px; margin: 0 auto; width: 100%; }
+.content { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
+  padding: 24px; max-width: 880px; margin: 0 auto; width: 100%; }
+/* pembungkus animasi transisi halaman harus ikut meregang, kalau tidak rantai tinggi putus */
+.content > div { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 /* ───────── Home / search ───────── */
 /* Toggle mode: Rekomendasi Sitasi / Automated Citation */
@@ -466,7 +473,7 @@ button { cursor: pointer; font-family: inherit; }
    .papers-grid juga tak perlu diatur ulang: sudah auto-fill (menyesuaikan sendiri). */
 
 /* ═════════ Chatbot (gaya Gemini) ═════════ */
-.chat { display: flex; flex-direction: column; height: calc(100vh - 106px); }
+.chat { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .chat-top { display: flex; align-items: center; justify-content: space-between; padding-bottom: 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
 .chat-title { display: flex; align-items: center; gap: 8px; font-weight: 700; color: var(--blue-700); }
 .newchat { display: inline-flex; align-items: center; gap: 6px; background: var(--blue-light); color: var(--blue-700); border: 1px solid var(--blue-border); padding: 6px 14px; border-radius: 9px; font-size: .85rem; font-weight: 600; transition: background var(--dur) var(--ease-out), transform var(--dur-fast) var(--ease-out); }
@@ -834,7 +841,7 @@ body.panel-open .content { max-width: 880px; margin-right: calc(min(var(--panel-
 .drawer-head button:hover { background: #eef1f6; }
 .drawer-body { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
 
-@media (max-width: 720px) { .chat { height: calc(100dvh - 96px); } .bubble { max-width: 95%; } }
+@media (max-width: 720px) { .bubble { max-width: 95%; } }
 
 
 /* ── Mobile: sidebar jadi drawer hamburger ─────────────── */
