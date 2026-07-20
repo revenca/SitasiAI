@@ -434,7 +434,8 @@ function BotBubble({ m, onRefs }) {
 
       {r.related?.length > 0 && onRefs && (
         <button className="papers-btn" onClick={onRefs}>
-          <IconLibrary size={15} /> Lihat referensi terkait ({r.related.length}) →
+          {/* hitung SAMA dgn isi panel: 1 referensi terpilih + n terkait */}
+          <IconLibrary size={15} /> Lihat referensi ({(r.best_reference_paper ? 1 : 0) + r.related.length}) →
         </button>
       )}
     </div>
