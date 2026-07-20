@@ -42,7 +42,20 @@ body {
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* Judul paper/DOI panjang tanpa spasi bisa menjebol lebar layar di HP */
+  overflow-wrap: break-word;
 }
+
+/* ── Fondasi responsif ────────────────────────────────────────────────────
+   Anak flex/grid default-nya `min-width:auto` → menolak menyusut di bawah
+   lebar kontennya. Ini penyebab paling umum layout melebar & muncul scroll
+   horizontal di layar kecil. Diberi min-width:0 agar benar-benar fleksibel. */
+.main, .content, .chat, .chat-thread, .bubble,
+.side-panel, .side-panel-body,
+.srctab-row, .srctab-src, .srctab-sum,
+.chat-list, .chat-list-item, .paper-card { min-width: 0; }
+
+img, svg, video { max-width: 100%; height: auto; }
 a { text-decoration: none; color: var(--blue); }
 button { cursor: pointer; font-family: inherit; }
 
@@ -278,7 +291,12 @@ button { cursor: pointer; font-family: inherit; }
 .papers-filter input { flex: 1; padding: 10px 14px; border: 1px solid var(--blue-border); border-radius: 10px; outline: none; }
 .papers-filter input:focus { border-color: var(--blue); }
 .papers-filter select { padding: 10px; border: 1px solid var(--blue-border); border-radius: 10px; }
-.papers-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+/* Auto-layout: jumlah kolom mengikuti lebar yang tersedia (bukan breakpoint tetap).
+   min(100%, 280px) menjaga kartu tetap muat di layar <280px. */
+.papers-grid {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+}
 .paper-card { border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; background: #fff; }
 .paper-card:hover { border-color: var(--blue); }
 .paper-cat { display: inline-block; background: var(--blue-light); color: var(--blue-700); font-size: .72rem; font-weight: 600; padding: 3px 9px; border-radius: 999px; margin-bottom: 8px; }
@@ -447,7 +465,9 @@ button { cursor: pointer; font-family: inherit; }
   .landing-nav { padding: 14px 20px; }
   .landing-hero { padding: 52px 22px 76px; min-height: auto; }
 }
-@media (max-width: 720px) { .papers-grid { grid-template-columns: 1fr; } .sidebar { display: none; } }
+/* Catatan: sidebar TIDAK boleh di-display:none di sini — pada <=900px ia menjadi drawer
+   (lihat blok @media 900px). Menyembunyikannya akan mematikan tombol hamburger di HP.
+   .papers-grid juga tak perlu diatur ulang: sudah auto-fill (menyesuaikan sendiri). */
 
 /* ═════════ Chatbot (gaya Gemini) ═════════ */
 .chat { display: flex; flex-direction: column; height: calc(100vh - 106px); }
